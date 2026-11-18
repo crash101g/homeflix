@@ -48,6 +48,9 @@ It's one file and uses nothing outside the Python standard library. You can read
 
 ### A streaming-app experience for your own files
 - **"Who's watching?" profiles.** Everyone in the house gets their own watch history and **My List**.
+
+  <p align="center"><img src="docs/screenshots/profiles.png" alt="Who's watching? profile picker with four profiles and an Add Profile button" width="70%"></p>
+
 - **A home screen worth scrolling.** Hero banner, **Continue Watching**, My List, Recently Added, TV Shows, Movies, New Music and genre rows.
 - **Instant search.** Press `/` and type. It searches titles, shows, artists and albums.
 
