@@ -34,7 +34,7 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -1040,9 +1040,9 @@ LOGIN_HTML = r"""<!doctype html><html><head><meta charset="utf-8"><meta name="vi
 form{background:rgba(0,0,0,.75);padding:48px 56px;border-radius:6px;width:300px}h1{color:#e50914;letter-spacing:2px;margin:0 0 28px;font-size:34px}
 input{width:100%;box-sizing:border-box;padding:14px;border-radius:4px;border:0;background:#333;color:#fff;font-size:16px;margin-bottom:16px}
 button{width:100%;padding:14px;border:0;border-radius:4px;background:#e50914;color:#fff;font-size:16px;font-weight:700;cursor:pointer}
-.bad{color:#e87c03;font-size:14px;margin-bottom:12px;display:none}</style></head><body>
+.bad{color:#e87c03;font-size:14px;margin-bottom:12px;display:none}.ver{color:#777;font-size:12px;text-align:center;margin-top:18px}</style></head><body>
 <form method="post" action="/login"><h1>HOMEFLIX</h1><div class="bad" id="bad">Incorrect password.</div>
-<input type="password" name="password" placeholder="Password" autofocus required><button>Sign In</button></form>
+<input type="password" name="password" placeholder="Password" autofocus required><button>Sign In</button><div class="ver">Homeflix v__VERSION__</div></form>
 <script>if(location.search.includes('bad'))document.getElementById('bad').style.display='block'</script></body></html>"""
 
 APP_HTML = r"""<!doctype html>
@@ -1062,6 +1062,7 @@ a{color:inherit}
 #nav{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;align-items:center;gap:22px;padding:14px 4%;background:linear-gradient(#000c,#0000);transition:background .3s}
 #nav.solid{background:#141414}
 .logo{color:var(--red);font-weight:900;font-size:28px;letter-spacing:1px;cursor:pointer;user-select:none;text-shadow:0 2px 6px #0008}
+.logo .ver{color:#aaa;font-size:11px;font-weight:600;letter-spacing:0;margin-left:6px;vertical-align:super;text-shadow:none}
 #links{display:flex;gap:18px;font-size:14px}
 #links a{text-decoration:none;color:#e5e5e5;cursor:pointer}
 #links a.on{color:#fff;font-weight:700}
@@ -1214,7 +1215,7 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
 <div id="gate" class="hidden"></div>
 <header id="nav">
   <button id="menuBtn" class="iconbtn" style="display:none" aria-label="Menu">&#9776;</button>
-  <div class="logo" data-go="home">HOMEFLIX</div>
+  <div class="logo" data-go="home" title="Homeflix __VERSION__">HOMEFLIX<span class="ver">v__VERSION__</span></div>
   <nav id="links">
     <a data-go="home">Home</a><a data-go="shows">TV Shows</a><a data-go="movies">Movies</a>
     <a data-go="music">Music</a><a data-go="recent">New &amp; Popular</a><a data-go="mylist">My List</a>
@@ -1534,6 +1535,12 @@ addEventListener('beforeunload',()=>{if(P.it)navigator.sendBeacon&&navigator.sen
 
 
 # ----------------------------------------------------------------------------
+def fill_version():
+    global APP_HTML, LOGIN_HTML
+    APP_HTML = APP_HTML.replace("__VERSION__", VERSION)
+    LOGIN_HTML = LOGIN_HTML.replace("__VERSION__", VERSION)
+
+
 def setup_output():
     """Make logging safe everywhere: pythonw (no console) and non-UTF-8 consoles."""
     if sys.stdout is None or sys.stderr is None:  # pythonw.exe, e.g. the Windows background task
@@ -1551,6 +1558,7 @@ def setup_output():
 def main():
     global VENC
     setup_output()
+    fill_version()
     load_settings(CONF_FILE)
     ap = argparse.ArgumentParser(description="Homeflix - Netflix-style media server for your LAN")
     ap.add_argument("--videos", action="append", metavar="DIR",
@@ -1567,6 +1575,7 @@ def main():
                          "high (default) or max (or set HOMEFLIX_QUALITY)")
     ap.add_argument("--no-thumbs", action="store_true", help="don't generate thumbnails")
     ap.add_argument("--quiet", action="store_true", help="don't log every HTTP request")
+    ap.add_argument("--version", action="version", version=f"Homeflix {VERSION}")
     a = ap.parse_args()
 
     videos = a.videos or [os.environ.get("HOMEFLIX_VIDEOS", "~/Downloads/movies")]
@@ -1592,6 +1601,7 @@ def main():
     Handler.quiet = a.quiet
     Handler.quality = a.quality
 
+    log(f"Homeflix {VERSION} starting (Python {sys.version.split()[0]}, {sys.platform})")
     if not FFMPEG:
         log("WARNING: ffmpeg/ffprobe not found - no thumbnails, durations or transcoding. Install: sudo apt install ffmpeg")
     elif not VENC:

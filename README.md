@@ -158,6 +158,7 @@ python homeflix.py --videos "D:\Movies" --music "%USERPROFILE%\Music"   # Window
 | `--rescan-minutes N` | Auto-rescan interval (default 15, `0` disables) |
 | `--no-thumbs` | Skip thumbnail generation |
 | `--quiet` | Don't log every HTTP request |
+| `--version` | Print the version and exit. The version is also shown at startup and next to the logo in the web app. |
 
 To make a setting stick, put it in your settings file (see below), e.g. `HOMEFLIX_QUALITY=max`. Homeflix reads that file every time it starts, however you run it. Flags on the command line win over the file. If you use the service, restart it afterwards.
 
