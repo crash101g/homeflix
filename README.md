@@ -94,10 +94,27 @@ The installer:
 - installs ffmpeg if it's missing
 - copies the app to `~/src/homeflix`
 - asks for your port, media folders and an optional password
-- sets up a **systemd user service** so Homeflix starts automatically
+- adds a `homeflix` command that runs the app with those settings
 - if UFW is active, offers to open the port **to your LAN subnet only**
 
+Nothing runs in the background. Start Homeflix when you want it:
+
+```bash
+homeflix            # Ctrl+C to stop. Flags like --quality max work here too.
+```
+
 Then open **`http://<your-PC-IP>:8484`** on any device in the house. That's it.
+
+### Want it as a service?
+
+Running it yourself is the default. If you'd rather have it in the background, re-run the installer with one of these:
+
+| Command | What it does |
+|---|---|
+| `bash install.sh --service` | Adds a systemd user service and starts it. It does **not** start at login. |
+| `bash install.sh --autostart` | Same, but also starts it every time you log in (and offers to keep it running when you log out). |
+| `bash install.sh --remove-service` | Removes the service. The `homeflix` command still works. |
+| `bash install.sh --uninstall` | Removes the service and the `homeflix` command. Your settings and watch history are kept. |
 
 ### Or just run it
 
@@ -119,7 +136,7 @@ python3 homeflix.py --host 127.0.0.1                  # this PC only
 | `--no-thumbs` | Skip thumbnail generation |
 | `--quiet` | Don't log every HTTP request |
 
-If you installed the service, set the quality by adding `HOMEFLIX_QUALITY=max` (or `balanced`) to `~/.config/homeflix/env`, then run `systemctl --user restart homeflix`.
+To make a quality stick, add `HOMEFLIX_QUALITY=max` (or `balanced`) to `~/.config/homeflix/env`. The `homeflix` command and the service both read that file. If you use the service, run `systemctl --user restart homeflix` afterwards.
 
 New files show up on their own: Homeflix rescans every 15 minutes, or right away when you press the **⟳** button.
 
@@ -139,15 +156,18 @@ A tool that serves files from your disk should be paranoid, so Homeflix is:
 | What | Where |
 |---|---|
 | App | `~/src/homeflix/homeflix.py` |
+| `homeflix` command | `~/.local/bin/homeflix` |
 | Settings (port, folders, password, quality) | `~/.config/homeflix/env` |
 | Profiles, watch progress, My List | `~/.local/share/homeflix/state.json` |
 | Thumbnails, probe cache, extracted subs | `~/.cache/homeflix/` (safe to delete) |
 
-**Service commands**
+**Service commands** (only if you installed with `--service` or `--autostart`)
 ```bash
+systemctl --user start homeflix        # start
+systemctl --user stop homeflix         # stop
 systemctl --user restart homeflix      # restart
 journalctl --user -u homeflix -f       # follow logs
-bash install.sh --uninstall            # remove
+bash install.sh --remove-service       # remove
 ```
 
 ## 🧰 Requirements
