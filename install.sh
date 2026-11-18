@@ -75,7 +75,9 @@ WantedBy=default.target
 EOF
 
 systemctl --user daemon-reload
-systemctl --user enable --now homeflix.service
+systemctl --user enable homeflix.service
+# restart (not just start) so re-running the installer picks up a new homeflix.py
+systemctl --user restart homeflix.service
 sleep 2
 systemctl --user --no-pager --lines=0 status homeflix.service | head -3 || true
 
