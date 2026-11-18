@@ -34,7 +34,7 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -50,12 +50,82 @@ WEB_AUDIO_EXT = {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav
 # still encodes 720p at 2x+ realtime; "high" is about +2 dB SSIM over "balanced".
 QUALITY = {"balanced": ("veryfast", 22, 8), "high": ("faster", 18, 20), "max": ("fast", 16, 40)}
 
-XDG_CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "homeflix"
-XDG_DATA = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "homeflix"
+WINDOWS = os.name == "nt"
+MACOS = sys.platform == "darwin"
 
-FFMPEG = shutil.which("ffmpeg")
-FFPROBE = shutil.which("ffprobe")
+
+def app_dirs():
+    """(config, data, cache) folders, in each OS's usual place."""
+    home = Path.home()
+    if WINDOWS:
+        roaming = Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming") / "Homeflix"
+        local = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local") / "Homeflix"
+        return roaming, roaming, local / "Cache"
+    if MACOS:
+        support = home / "Library" / "Application Support" / "Homeflix"
+        return support, support, home / "Library" / "Caches" / "Homeflix"
+    env = os.environ.get
+    return (Path(env("XDG_CONFIG_HOME") or home / ".config") / "homeflix",
+            Path(env("XDG_DATA_HOME") or home / ".local" / "share") / "homeflix",
+            Path(env("XDG_CACHE_HOME") or home / ".cache") / "homeflix")
+
+
+CONF_DIR, XDG_DATA, XDG_CACHE = app_dirs()
+CONF_FILE = CONF_DIR / "env"
+
+def find_tool(name):
+    """Find ffmpeg/ffprobe on PATH, or where common installers put them (a background
+    task or launchd agent may not have the same PATH as your terminal)."""
+    found = shutil.which(name)
+    if found:
+        return found
+    if WINDOWS:
+        local = os.environ.get("LOCALAPPDATA", "")
+        dirs = [os.path.join(local, "Microsoft", "WinGet", "Links"),
+                os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "chocolatey", "bin"),
+                os.path.join(str(Path.home()), "scoop", "shims"),
+                os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "ffmpeg", "bin"),
+                r"C:\ffmpeg\bin"]
+    else:
+        dirs = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin", "/usr/bin", "/snap/bin"]
+    return shutil.which(name, path=os.pathsep.join(dirs))
+
+
+FFMPEG = find_tool("ffmpeg")
+FFPROBE = find_tool("ffprobe")
 NICE = shutil.which("nice")
+# On Windows, keep ffmpeg from flashing a console window when running without one (pythonw).
+SUBPROC = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if WINDOWS else {}
+# Thumbnails are background work: run them at low priority.
+LOW_PRIO = dict(SUBPROC, creationflags=SUBPROC["creationflags"] | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)) \
+    if WINDOWS else {}
+
+
+def load_settings(path: Path):
+    """Read KEY="value" lines from the settings file into os.environ.
+
+    Real environment variables and command-line flags still win. Values may be bare or
+    double-quoted with \\ and \" escapes (the format the installers write, which systemd
+    also reads)."""
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return
+    for line in lines:
+        k, sep, v = line.strip().partition("=")
+        k = k.strip()
+        if not sep or not k.startswith("HOMEFLIX_"):
+            continue
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] == '"':
+            out, i, v = [], 0, v[1:-1]
+            while i < len(v):
+                if v[i] == "\\" and i + 1 < len(v):
+                    i += 1
+                out.append(v[i])
+                i += 1
+            v = "".join(out)
+        os.environ.setdefault(k, v)
 
 
 def log(*a):
@@ -66,7 +136,14 @@ def atomic_write(path: Path, data: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(data, encoding="utf-8")
-    os.replace(tmp, path)
+    for attempt in range(5):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:  # Windows: antivirus or a reader briefly holding the file
+            if attempt == 4:
+                raise
+            time.sleep(0.1)
 
 
 def load_json(path: Path, default):
@@ -226,7 +303,7 @@ class Library:
         rel = p.relative_to(root)
         it = {
             "id": iid, "kind": kind, "size": st.st_size, "added": int(st.st_mtime),
-            "folder": str(rel.parent) if str(rel.parent) != "." else root.name,
+            "folder": rel.parent.as_posix() if str(rel.parent) != "." else root.name,
             "file": p.name, "duration": 0,
             "_path": sp, "_root": str(root), "_key": f"{st.st_size}|{int(st.st_mtime)}",
             "_ext": p.suffix.lower(), "_sidesubs": [], "_img": None,
@@ -300,7 +377,7 @@ class Library:
             try:
                 out = subprocess.run(
                     [FFPROBE, "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", it["_path"]],
-                    capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
+                    capture_output=True, timeout=30, stdin=subprocess.DEVNULL, **SUBPROC)
                 raw = json.loads(out.stdout or b"{}")
             except Exception:
                 raw = {}
@@ -461,7 +538,7 @@ class Library:
                     [FFMPEG, "-nostdin", "-v", "error", "-y"] + base]
         for c in cmds:
             try:
-                subprocess.run(pre + c, capture_output=True, timeout=60, stdin=subprocess.DEVNULL)
+                subprocess.run(pre + c, capture_output=True, timeout=60, stdin=subprocess.DEVNULL, **(LOW_PRIO or SUBPROC))
             except Exception:
                 continue
             if tmp.exists() and tmp.stat().st_size > 0:
@@ -517,7 +594,7 @@ class Library:
                     return None
                 r = subprocess.run([FFMPEG, "-nostdin", "-v", "error", "-i", it["_path"], "-map", f"0:s:{n}",
                                     "-f", "webvtt", "pipe:1"], capture_output=True, timeout=300,
-                                   stdin=subprocess.DEVNULL)
+                                   stdin=subprocess.DEVNULL, **SUBPROC)
                 if r.returncode != 0 or not r.stdout:
                     return None
                 cache.write_bytes(r.stdout)
@@ -647,7 +724,8 @@ class State:
 # ----------------------------------------------------------------------------
 class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # On Windows SO_REUSEADDR lets a second server silently share the port, so leave it off there.
+    allow_reuse_address = not WINDOWS
     request_queue_size = 64
 
 
@@ -710,13 +788,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             self.route_get()
-        except (BrokenPipeError, ConnectionResetError):
+        except ConnectionError:  # includes ConnectionAbortedError, which Windows raises
             pass
 
     def do_POST(self):
         try:
             self.route_post()
-        except (BrokenPipeError, ConnectionResetError):
+        except ConnectionError:  # includes ConnectionAbortedError, which Windows raises
             pass
         except (ValueError, KeyError, TypeError) as e:
             self.err(400, str(e))
@@ -886,7 +964,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         cmd += ["-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
         if self.command == "HEAD":
             return self.send_bytes(b"", ctype)
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                                **SUBPROC)
         self.close_connection = True
         try:
             self.send_response(200)
@@ -917,7 +996,8 @@ def pick_encoder():
     if not FFMPEG:
         return None
     try:
-        out = subprocess.run([FFMPEG, "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=10).stdout
+        out = subprocess.run([FFMPEG, "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=10,
+                             **SUBPROC).stdout
     except Exception:
         return None
     for enc in ("libx264", "libopenh264", "h264_vaapi"):
@@ -938,6 +1018,8 @@ def lan_ips():
         s.close()
     except OSError:
         pass
+    if MACOS:  # resolving the hostname can stall for seconds on macOS; the UDP trick is enough
+        return sorted(ips)
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             if not info[4][0].startswith("127."):
@@ -1452,8 +1534,24 @@ addEventListener('beforeunload',()=>{if(P.it)navigator.sendBeacon&&navigator.sen
 
 
 # ----------------------------------------------------------------------------
+def setup_output():
+    """Make logging safe everywhere: pythonw (no console) and non-UTF-8 consoles."""
+    if sys.stdout is None or sys.stderr is None:  # pythonw.exe, e.g. the Windows background task
+        XDG_DATA.mkdir(parents=True, exist_ok=True)
+        f = open(XDG_DATA / "homeflix.log", "a", encoding="utf-8", buffering=1)
+        sys.stdout = sys.stdout or f
+        sys.stderr = sys.stderr or f
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main():
     global VENC
+    setup_output()
+    load_settings(CONF_FILE)
     ap = argparse.ArgumentParser(description="Homeflix - Netflix-style media server for your LAN")
     ap.add_argument("--videos", action="append", metavar="DIR",
                     help="video folder (repeatable). Default: ~/Downloads/movies")
@@ -1475,7 +1573,7 @@ def main():
     music = a.music or [os.environ.get("HOMEFLIX_MUSIC", "~/Music")]
     roots = []
     for r in videos + music:
-        for part in str(r).split(":"):
+        for part in str(r).split(os.pathsep):  # ":" on Linux/macOS, ";" on Windows
             if part and part not in roots:
                 roots.append(part)
 

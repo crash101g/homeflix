@@ -6,7 +6,7 @@
 
 **A streaming service for your own media library, in one Python file.**
 
-No Docker. No database. No account. No `pip install`. Just `python3 homeflix.py`.
+No Docker. No database. No account. No `pip install`. Just `python3 homeflix.py`. Linux, macOS and Windows.
 
 ![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue?logo=python&logoColor=white)
 ![Dependencies: zero](https://img.shields.io/badge/dependencies-zero-brightgreen)
@@ -41,6 +41,7 @@ It's one file and uses nothing outside the Python standard library. You can read
 | **Install** | One Python file | Docker images, databases, accounts |
 | **Dependencies** | Python standard library (ffmpeg optional) | Dozens of packages and services |
 | **Phones home?** | Never. No telemetry, no cloud login | Often requires an online account |
+| **Runs on** | Linux, macOS, Windows | Varies |
 | **Client apps** | Any web browser | Often platform-specific apps |
 | **Auditable** | ~1,500 lines you can actually read | Hundreds of thousands |
 
@@ -83,21 +84,34 @@ It's one file and uses nothing outside the Python standard library. You can read
 
 ## 🚀 Up and running in 60 seconds
 
-### One-command install (Pop!_OS / Ubuntu)
+Homeflix runs on **Linux, macOS and Windows**. The installer sets it up and gives you a `homeflix` command. Nothing runs in the background unless you ask for it.
+
+### Linux and macOS
 
 ```bash
 git clone https://github.com/crash101g/homeflix.git && cd homeflix
 bash install.sh
 ```
 
-The installer:
-- installs ffmpeg if it's missing
-- copies the app to `~/src/homeflix`
+### Windows
+
+Download the repo (**Code → Download ZIP**), unzip it, and double-click **`install.cmd`**.
+Or, in PowerShell:
+
+```powershell
+git clone https://github.com/crash101g/homeflix.git; cd homeflix
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+### What the installer does
+
+- installs ffmpeg if it's missing (apt/dnf/pacman on Linux, Homebrew on macOS, winget on Windows). On Windows it can also install Python.
+- copies the app to `~/src/homeflix` (Windows: `%LOCALAPPDATA%\Programs\Homeflix`)
 - asks for your port, media folders and an optional password
 - adds a `homeflix` command that runs the app with those settings
-- if UFW is active, offers to open the port **to your LAN subnet only**
+- offers to open the firewall port **to your local network only** (UFW on Linux, Windows Firewall on Windows)
 
-Nothing runs in the background. Start Homeflix when you want it:
+Start Homeflix when you want it:
 
 ```bash
 homeflix            # Ctrl+C to stop. Flags like --quality max work here too.
@@ -105,24 +119,33 @@ homeflix            # Ctrl+C to stop. Flags like --quality max work here too.
 
 Then open **`http://<your-PC-IP>:8484`** on any device in the house. That's it.
 
+> **macOS:** the first time, macOS asks whether Python may read folders like Downloads or Music and accept incoming connections. Click **Allow** both times.
+>
+> **Windows:** open a new terminal after installing so the `homeflix` command is found. If Windows asks whether Python can use the network, allow it on private networks.
+
 ### Want it as a service?
 
-Running it yourself is the default. If you'd rather have it in the background, re-run the installer with one of these:
+Running it yourself is the default. If you'd rather have it in the background, re-run the installer with one of these options. Linux uses a systemd user service, macOS a launchd agent, and Windows a Task Scheduler task.
 
-| Command | What it does |
-|---|---|
-| `bash install.sh --service` | Adds a systemd user service and starts it. It does **not** start at login. |
-| `bash install.sh --autostart` | Same, but also starts it every time you log in (and offers to keep it running when you log out). |
-| `bash install.sh --remove-service` | Removes the service. The `homeflix` command still works. |
-| `bash install.sh --uninstall` | Removes the service and the `homeflix` command. Your settings and watch history are kept. |
+| Linux / macOS | Windows | What it does |
+|---|---|---|
+| `bash install.sh --service` | `install.cmd -Service` | Runs Homeflix in the background now. It does **not** start at login. |
+| `bash install.sh --autostart` | `install.cmd -Autostart` | Same, but also starts it every time you log in. |
+| `bash install.sh --remove-service` | `install.cmd -RemoveService` | Removes the background service. The `homeflix` command still works. |
+| `bash install.sh --uninstall` | `install.cmd -Uninstall` | Removes the service and the `homeflix` command. Your settings and watch history are kept. |
+
+The installer prints the exact start, stop and log commands for your system. They're also listed under [Where things live](#-where-things-live).
 
 ### Or just run it
+
+No installer needed. Use `python3` on Linux and macOS, or `python` on Windows:
 
 ```bash
 python3 homeflix.py                                   # ~/Downloads/movies + ~/Music on :8484
 python3 homeflix.py --password 'something' --port 9000
 python3 homeflix.py --videos ~/Videos --videos /mnt/nas/movies --music ~/Music
 python3 homeflix.py --host 127.0.0.1                  # this PC only
+python homeflix.py --videos "D:\Movies" --music "%USERPROFILE%\Music"   # Windows (cmd)
 ```
 
 | Option | What it does |
@@ -136,7 +159,7 @@ python3 homeflix.py --host 127.0.0.1                  # this PC only
 | `--no-thumbs` | Skip thumbnail generation |
 | `--quiet` | Don't log every HTTP request |
 
-To make a quality stick, add `HOMEFLIX_QUALITY=max` (or `balanced`) to `~/.config/homeflix/env`. The `homeflix` command and the service both read that file. If you use the service, run `systemctl --user restart homeflix` afterwards.
+To make a setting stick, put it in your settings file (see below), e.g. `HOMEFLIX_QUALITY=max`. Homeflix reads that file every time it starts, however you run it. Flags on the command line win over the file. If you use the service, restart it afterwards.
 
 New files show up on their own: Homeflix rescans every 15 minutes, or right away when you press the **⟳** button.
 
@@ -153,26 +176,29 @@ A tool that serves files from your disk should be paranoid, so Homeflix is:
 
 ## 📁 Where things live
 
-| What | Where |
-|---|---|
-| App | `~/src/homeflix/homeflix.py` |
-| `homeflix` command | `~/.local/bin/homeflix` |
-| Settings (port, folders, password, quality) | `~/.config/homeflix/env` |
-| Profiles, watch progress, My List | `~/.local/share/homeflix/state.json` |
-| Thumbnails, probe cache, extracted subs | `~/.cache/homeflix/` (safe to delete) |
+| What | Linux | macOS | Windows |
+|---|---|---|---|
+| App | `~/src/homeflix/` | `~/src/homeflix/` | `%LOCALAPPDATA%\Programs\Homeflix\` |
+| `homeflix` command | `~/.local/bin/homeflix` | `~/.local/bin/homeflix` | `%LOCALAPPDATA%\Programs\Homeflix\homeflix.cmd` |
+| Settings (port, folders, password, quality) | `~/.config/homeflix/env` | `~/Library/Application Support/Homeflix/env` | `%APPDATA%\Homeflix\env` |
+| Profiles, watch progress, My List | `~/.local/share/homeflix/state.json` | `~/Library/Application Support/Homeflix/state.json` | `%APPDATA%\Homeflix\state.json` |
+| Thumbnails, probe cache, extracted subs (safe to delete) | `~/.cache/homeflix/` | `~/Library/Caches/Homeflix/` | `%LOCALAPPDATA%\Homeflix\Cache\` |
 
-**Service commands** (only if you installed with `--service` or `--autostart`)
-```bash
-systemctl --user start homeflix        # start
-systemctl --user stop homeflix         # stop
-systemctl --user restart homeflix      # restart
-journalctl --user -u homeflix -f       # follow logs
-bash install.sh --remove-service       # remove
-```
+**Service commands** (only if you installed with `--service` / `--autostart`)
+
+| | Linux (systemd) | macOS (launchd) | Windows (Task Scheduler, in PowerShell) |
+|---|---|---|---|
+| Start | `systemctl --user start homeflix` | `launchctl bootstrap gui/$(id -u) <plist>` * | `Start-ScheduledTask Homeflix` |
+| Stop | `systemctl --user stop homeflix` | `launchctl bootout gui/$(id -u)/com.homeflix` | `Stop-ScheduledTask Homeflix` |
+| Logs | `journalctl --user -u homeflix -f` | `tail -f ~/Library/Logs/Homeflix.log` | `Get-Content -Wait $env:APPDATA\Homeflix\homeflix.log` |
+
+\* The plist is `~/Library/LaunchAgents/com.homeflix.plist` with `--autostart`, or `~/Library/Application Support/Homeflix/com.homeflix.plist` with `--service`.
+
+> **macOS background service and protected folders:** macOS doesn't let background apps read Downloads, Documents or Desktop. If your media is there, give Python **Full Disk Access** (System Settings → Privacy & Security; the installer prints which Python to add), or keep your media in another folder such as `~/Movies`.
 
 ## 🧰 Requirements
 
-- **Python 3.8+.** That's the only hard requirement.
+- **Python 3.8+** on Linux, macOS or Windows. That's the only hard requirement.
 - **ffmpeg / ffprobe** (optional, strongly recommended) for thumbnails, durations, tags, embedded subtitles and converting formats browsers can't play.
 
 ## 📜 License
