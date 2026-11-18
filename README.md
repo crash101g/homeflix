@@ -17,11 +17,22 @@ No Docker. No database. No account. No `pip install`. Just `python3 homeflix.py`
 
 ---
 
+<p align="center">
+  <img src="docs/screenshots/home.png" alt="Homeflix home screen with a hero banner and a Continue Watching row" width="100%">
+</p>
+
 You already own the movies, the shows and the albums. They're sitting in a folder named `Downloads` with filenames like `The.Show.S02E07.1080p.WEB.x265-GRP.mkv`.
 
 **Homeflix turns that folder into a polished streaming app.** Open it on any phone, laptop or smart TV browser in your house. You get poster rows, a "Who's watching?" screen, Continue Watching, binge-ready TV seasons, and a music player that works from your phone's lock screen.
 
 It's one file and uses nothing outside the Python standard library. You can read all of it in an afternoon, and it runs on whatever machine already has your media on it.
+
+<p align="center">
+  <img src="docs/screenshots/player.jpg" alt="Homeflix video player mid-episode, showing the seek bar, skip, volume and next-episode controls" width="100%">
+  <br><sub>The player resumes where you left off, and the controls fade away while you watch.</sub>
+</p>
+
+<sub>Screenshots use a demo library of made-up titles with generated artwork.</sub>
 
 ## ✨ Why Homeflix?
 
