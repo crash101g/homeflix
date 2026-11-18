@@ -1029,7 +1029,7 @@ body.mplay .scanning{bottom:96px}
 .mhead h1{margin:0 0 16px;font-size:clamp(24px,4vw,44px);text-shadow:2px 2px 6px #000a}
 .mhead.album{aspect-ratio:auto;display:flex;gap:26px;padding:30px 5% 10px;align-items:flex-end;background:linear-gradient(#3a3a3a,#181818)}
 .mhead.album:after{display:none}
-.mhead.album .art{position:relative;width:200px;flex:0 0 200px;border-radius:4px;box-shadow:0 8px 24px #0009}
+.mhead.album .art{position:relative;width:200px;flex:0 0 200px;aspect-ratio:1;border-radius:4px;box-shadow:0 8px 24px #0009}
 .mhead.album .info{position:static}
 .close{position:absolute;top:14px;right:14px;z-index:5;width:36px;height:36px;border-radius:50%;border:0;background:#181818;font-size:20px}
 .mbody{padding:10px 5% 36px}
