@@ -66,6 +66,8 @@ It's one file and uses nothing outside the Python standard library. You can read
 ### Plays (almost) anything
 - **Direct streaming** with instant byte-range seeking for browser-friendly files (H.264 / VP9 / AV1 in MP4, MKV, WebM).
 - **Converted as it plays** with ffmpeg for everything else: HEVC/x265, AVI, WMV, old MPEG-4, ALAC, WMA and more. Seeking still works.
+- **HEVC/x265 in original quality** on devices that can decode it (iPhone, iPad, Mac, many Android phones and TVs). The video is passed through untouched, with no re-encoding.
+- **High-quality conversion by default**, with three levels to match your CPU and network: `balanced`, `high` and `max`.
 - **Subtitles:** sidecar `.srt`/`.vtt` files (`Movie.en.srt`, `Subs/` folders) plus text subtitles embedded in MKVs.
 
 ### A real music player, too
@@ -112,9 +114,12 @@ python3 homeflix.py --host 127.0.0.1                  # this PC only
 | `--music DIR` | Music folder (repeatable) |
 | `--host` / `--port` | Bind address and port (default `0.0.0.0:8484`) |
 | `--password` | Require a password to use the app |
+| `--quality LEVEL` | Quality for files that must be converted: `balanced`, `high` (default) or `max` |
 | `--rescan-minutes N` | Auto-rescan interval (default 15, `0` disables) |
 | `--no-thumbs` | Skip thumbnail generation |
 | `--quiet` | Don't log every HTTP request |
+
+If you installed the service, set the quality by adding `HOMEFLIX_QUALITY=max` (or `balanced`) to `~/.config/homeflix/env`, then run `systemctl --user restart homeflix`.
 
 New files show up on their own: Homeflix rescans every 15 minutes, or right away when you press the **⟳** button.
 
@@ -134,7 +139,7 @@ A tool that serves files from your disk should be paranoid, so Homeflix is:
 | What | Where |
 |---|---|
 | App | `~/src/homeflix/homeflix.py` |
-| Settings (port, folders, password) | `~/.config/homeflix/env` |
+| Settings (port, folders, password, quality) | `~/.config/homeflix/env` |
 | Profiles, watch progress, My List | `~/.local/share/homeflix/state.json` |
 | Thumbnails, probe cache, extracted subs | `~/.cache/homeflix/` (safe to delete) |
 

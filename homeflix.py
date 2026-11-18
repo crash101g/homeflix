@@ -34,7 +34,7 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -46,6 +46,9 @@ WEB_VCODECS = {"h264", "vp8", "vp9", "av1"}
 WEB_ACODECS = {"aac", "mp3", "opus", "vorbis", "flac"}
 WEB_VCONTAINERS = {".mp4", ".m4v", ".webm", ".mov", ".mkv", ".ogv"}
 WEB_AUDIO_EXT = {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"}
+# Transcode quality: (x264 preset, CRF, max bitrate in Mbit/s). On a 6-core i5-8500T every level
+# still encodes 720p at 2x+ realtime; "high" is about +2 dB SSIM over "balanced".
+QUALITY = {"balanced": ("veryfast", 22, 8), "high": ("faster", 18, 20), "max": ("fast", 16, 40)}
 
 XDG_CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "homeflix"
 XDG_DATA = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "homeflix"
@@ -349,6 +352,7 @@ class Library:
                 it["width"], it["height"] = v.get("w"), v.get("h")
             vc = (v or {}).get("codec")
             ac = (a or {}).get("codec")
+            it["vcodec"] = vc
             it["direct"] = (it["_ext"] in WEB_VCONTAINERS and vc in WEB_VCODECS
                             and (ac is None or ac in WEB_ACODECS)
                             and (v or {}).get("pix") in (None, "yuv420p", "yuvj420p"))
@@ -655,6 +659,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     password = None
     secret = b""
     quiet = False
+    quality = "high"
 
     def log_message(self, fmt, *args):
         if not self.quiet:
@@ -757,7 +762,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_bytes(vtt.encode("utf-8"), "text/vtt; charset=utf-8", extra={"Cache-Control": "no-store"})
         if kind == "transcode":
             t = float((qs.get("t") or ["0"])[0] or 0)
-            return self.transcode(it, max(0.0, t))
+            return self.transcode(it, max(0.0, t), (qs.get("hevc") or [""])[0])
 
     def route_post(self):
         u = urllib.parse.urlsplit(self.path)
@@ -844,7 +849,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
                 remaining -= len(chunk)
 
-    def transcode(self, it, t):
+    def transcode(self, it, t, hevc=""):
+        """Stream it as fragmented MP4. hevc="1" (Main) or "10" (Main10) means the browser
+        can decode HEVC itself, so HEVC video is passed through untouched."""
         if not FFMPEG:
             return self.err(501, "ffmpeg is not installed on the server")
         cmd = [FFMPEG, "-nostdin", "-v", "error", "-hide_banner"]
@@ -852,15 +859,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             cmd += ["-ss", f"{t:.2f}"]
         cmd += ["-i", it["_path"]]
         if it["kind"] == "video":
-            v = it.get("_v") or {}
+            v, a = it.get("_v") or {}, it.get("_a") or {}
+            pix = v.get("pix")
             cmd += ["-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn"]
-            if not VENC or (v.get("codec") == "h264" and v.get("pix") in ("yuv420p", "yuvj420p", None)):
+            hevc_ok = v.get("codec") == "hevc" and (pix in ("yuv420p", None) or (hevc == "10" and pix == "yuv420p10le"))
+            if hevc in ("1", "10") and hevc_ok:
+                cmd += ["-c:v", "copy", "-tag:v", "hvc1"]
+            elif not VENC or (v.get("codec") == "h264" and pix in ("yuv420p", "yuvj420p", None)):
                 cmd += ["-c:v", "copy"]
             else:
-                cmd += ["-c:v", VENC, "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
-                        "-vf", "scale='min(1920,iw)':-2", "-g", "48"] if VENC == "libx264" else \
-                       ["-c:v", VENC, "-pix_fmt", "yuv420p", "-vf", "scale='min(1920,iw)':-2"]
-            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
+                preset, crf, mbit = QUALITY[self.quality]
+                scale = ["-pix_fmt", "yuv420p", "-vf", "scale='min(1920,iw)':-2"]
+                if VENC == "libx264":
+                    cmd += ["-c:v", VENC, "-preset", preset, "-crf", str(crf), "-maxrate", f"{mbit}M",
+                            "-bufsize", f"{mbit * 2}M", "-g", "48"] + scale
+                else:  # libopenh264 has no CRF mode; its default bitrate is very low
+                    cmd += ["-c:v", VENC, "-b:v", f"{mbit // 2}M", "-maxrate", f"{mbit}M"] + scale
+            if a.get("codec") == "aac":
+                cmd += ["-c:a", "copy"]
+            else:
+                cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
             ctype = "video/mp4"
         else:
             cmd += ["-vn", "-sn", "-c:a", "aac", "-b:a", "256k"]
@@ -1172,6 +1190,9 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
 const $=s=>document.querySelector(s);
 const S={items:[],byId:{},movies:[],shows:[],albums:[],showByKey:{},albumByKey:{},profile:null,profiles:[],
          progress:{},mylist:[],view:'home',q:'',version:-1,scanning:false,transcode:true,auth:false};
+// Can this browser decode HEVC itself? Then HEVC files are passed through untouched instead of re-encoded.
+const HEVC=(()=>{const v=document.createElement('video'),ok=c=>v.canPlayType(`video/mp4; codecs="${c}"`)==='probably';return ok('hvc1.2.4.L120.90')?'10':ok('hvc1.1.6.L120.90')?'1':''})();
+const hevcPass=it=>!!HEVC&&it.vcodec==='hevc';
 
 function h(tag,attrs,...kids){const e=document.createElement(tag);
   for(const[k,v]of Object.entries(attrs||{})){if(v==null||v===false)continue;
@@ -1290,7 +1311,7 @@ function openMovie(it){const p=prog(it.id);const r=res(it);
       h('button',{class:'btn play',onclick:()=>{closeModal();playVideo(it)}},resumeLabel(it)),
       p&&p.pos>20?h('button',{class:'btn gray',onclick:()=>{closeModal();playVideo(it,0)}},'↺  Start Over'):null,listBtn(it.id)))),
    h('div',{class:'mbody'},meta(isNew(it)?h('span',{class:'new'},'New'):null,it.year,fmtDur(it.duration),r?h('span',{class:'hd'},r):null,it.subs?.length?h('span',{class:'hd'},'CC'):null,
-       !it.direct&&S.transcode?h('span',{class:'hd',title:'Converted on the fly for your browser'},'TRANSCODE'):null),
+       !it.direct&&S.transcode&&!hevcPass(it)?h('span',{class:'hd',title:'Converted on the fly for your browser'},'TRANSCODE'):null),
      p&&!p.done&&p.dur?h('div',{style:'max-width:300px;margin-bottom:14px'},h('div',{class:'pbar',style:'position:static'},h('i',{style:`width:${pct(it.id)}%`})),h('div',{class:'small',style:'margin-top:6px'},`${fmtT(p.dur-p.pos)} remaining`)):null,
      h('div',{class:'small'},it.folder+' / '+it.file),h('div',{class:'small'},(it.size/1e9).toFixed(2)+' GB'))])}
 function nextUp(s){const ents=s.eps.map(e=>[e,prog(e.id)]).filter(x=>x[1]).sort((a,b)=>b[1].updated-a[1].updated);if(!ents.length)return s.eps[0];const[e,p]=ents[0];if(!p.done)return e;return s.eps[s.eps.indexOf(e)+1]||s.eps[0]}
@@ -1314,7 +1335,7 @@ function openAlbum(a){const dur=a.tracks.reduce((s,t)=>s+(t.duration||0),0);
 
 /* ---------- video player ---------- */
 const vid=$('#vid'),P={it:null,mode:'direct',off:0,dur:0,pending:0,sub:-1,lastSave:0,drag:false,idleT:0};
-function playVideo(it,start){stopMusic(true);closeModal();P.it=it;P.dur=it.duration||0;P.mode=(it.direct||!S.transcode)?'direct':'tx';P.sub=-1;
+function playVideo(it,start){stopMusic(true);closeModal();P.it=it;P.dur=it.duration||0;P.mode=(it.direct||!S.transcode)?'direct':'tx';P.hevc=hevcPass(it);P.sub=-1;
   const p=prog(it.id);if(start==null)start=p&&!p.done&&p.pos>20?Math.max(0,p.pos-5):0;
   $('#ptitle').replaceChildren(it.show?h('span',{},h('b',{},it.show),h('small',{},`S${it.season}:E${it.episode} ${it.epTitle||''}`)):h('b',{},it.title));
   const subs=$('#psubs');subs.replaceChildren(h('option',{value:-1},'Subtitles: Off'),...(it.subs||[]).map((l,i)=>h('option',{value:i},l)));subs.classList.toggle('hidden',!(it.subs||[]).length);
@@ -1324,8 +1345,8 @@ function playVideo(it,start){stopMusic(true);closeModal();P.it=it;P.dur=it.durat
   loadVid(start);poke()}
 function nextEp(it){if(!it.show)return null;const s=S.showByKey['show:'+it.show];return s.eps[s.eps.indexOf(it)+1]||null}
 function loadVid(t){spin(true);[...vid.querySelectorAll('track')].forEach(x=>x.remove());
-  if(P.mode==='direct'){P.off=0;P.pending=t;vid.src='/media/'+P.it.id}else{P.off=t;P.pending=0;vid.src=`/transcode/${P.it.id}?t=${t.toFixed(1)}`}
-  $('#pmode').textContent=P.mode==='tx'?'Transcoding':'';
+  if(P.mode==='direct'){P.off=0;P.pending=t;vid.src='/media/'+P.it.id}else{P.off=t;P.pending=0;vid.src=`/transcode/${P.it.id}?t=${t.toFixed(1)}${P.hevc?'&hevc='+HEVC:''}`}
+  $('#pmode').textContent=P.mode==='tx'&&!P.hevc?'Transcoding':'';
   if(P.sub>=0)addSub(P.sub);vid.play().catch(()=>{})}
 function addSub(i){[...vid.querySelectorAll('track')].forEach(x=>x.remove());P.sub=i;if(i<0)return;
   const tr=h('track',{kind:'subtitles',default:true,src:`/subs/${P.it.id}/${i}?offset=${P.off.toFixed(2)}`,label:'sub'});vid.append(tr);
@@ -1334,12 +1355,15 @@ const cur=()=>P.off+(vid.currentTime||0);
 function seekTo(t){t=Math.max(0,Math.min(t,(P.dur||1e9)-1));if(P.mode==='direct')vid.currentTime=t;else loadVid(t)}
 function spin(on){$('#pspin').classList.toggle('hidden',!on)}
 function msg(t,ms=2500){const m=$('#pmsg');m.textContent=t;m.classList.remove('hidden');clearTimeout(m._t);m._t=setTimeout(()=>m.classList.add('hidden'),ms)}
-vid.addEventListener('loadedmetadata',()=>{if(P.mode==='direct'){if(isFinite(vid.duration))P.dur=vid.duration;if(P.pending){vid.currentTime=P.pending;P.pending=0}}});
-vid.addEventListener('waiting',()=>spin(true));vid.addEventListener('playing',()=>{spin(false);$('#pplay').innerHTML='&#10074;&#10074;'});
+// HEVC passthrough failed (an error, or audio with no picture): convert it after all
+function hevcFail(){const t=cur();P.hevc=false;msg('Converting this file for your browser…');loadVid(t)}
+vid.addEventListener('loadedmetadata',()=>{if(P.mode==='tx'&&P.hevc&&!vid.videoWidth)return hevcFail();if(P.mode==='direct'){if(isFinite(vid.duration))P.dur=vid.duration;if(P.pending){vid.currentTime=P.pending;P.pending=0}}});
+vid.addEventListener('waiting',()=>spin(true));vid.addEventListener('playing',()=>{if(P.mode==='tx'&&P.hevc&&!vid.videoWidth)return hevcFail();spin(false);$('#pplay').innerHTML='&#10074;&#10074;'});
 vid.addEventListener('canplay',()=>spin(false));
 vid.addEventListener('pause',()=>{$('#pplay').innerHTML='&#9654;';saveProg(true)});
 vid.addEventListener('error',()=>{if(!P.it||!vid.getAttribute('src'))return;spin(false);
   if(P.mode==='direct'&&S.transcode){const t=cur();P.mode='tx';msg('Converting this file for your browser…');loadVid(t)}
+  else if(P.mode==='tx'&&P.hevc)hevcFail()
   else msg(S.transcode?'Sorry, this file could not be played.':'Your browser cannot play this format and ffmpeg is not installed on the server.',6000)});
 vid.addEventListener('timeupdate',()=>{const t=cur();if(!P.drag&&P.dur)$('#pseek').value=t/P.dur*1000;$('#ptime').textContent=fmtT(t)+' / '+fmtT(P.dur);if(Date.now()-P.lastSave>10000)saveProg()});
 vid.addEventListener('ended',async()=>{if(P.mode==='tx'&&P.dur&&cur()<P.dur-30){return}await saveProg(true,true);const n=nextEp(P.it);if(n){msg('Next episode…');playVideo(n,0)}else closePlayer()});
@@ -1440,6 +1464,9 @@ def main():
     ap.add_argument("--password", default=os.environ.get("HOMEFLIX_PASSWORD"),
                     help="require this password (or set HOMEFLIX_PASSWORD)")
     ap.add_argument("--rescan-minutes", type=float, default=15, help="auto-rescan interval, 0 to disable")
+    ap.add_argument("--quality", choices=list(QUALITY), default=os.environ.get("HOMEFLIX_QUALITY", "high"),
+                    help="quality for files that must be converted: balanced (lighter on CPU and Wi-Fi), "
+                         "high (default) or max (or set HOMEFLIX_QUALITY)")
     ap.add_argument("--no-thumbs", action="store_true", help="don't generate thumbnails")
     ap.add_argument("--quiet", action="store_true", help="don't log every HTTP request")
     a = ap.parse_args()
@@ -1465,6 +1492,7 @@ def main():
     Handler.password = a.password or None
     Handler.secret = secret_file.read_bytes()
     Handler.quiet = a.quiet
+    Handler.quality = a.quality
 
     if not FFMPEG:
         log("WARNING: ffmpeg/ffprobe not found - no thumbnails, durations or transcoding. Install: sudo apt install ffmpeg")
@@ -1487,6 +1515,8 @@ def main():
     except OSError as e:
         sys.exit(f"Could not listen on {a.host}:{a.port}: {e}")
     log(f"Homeflix {VERSION} serving {', '.join(str(r) for r in lib.roots)}")
+    if FFMPEG and VENC:
+        log(f"  Conversion quality: {a.quality} (change with --quality or HOMEFLIX_QUALITY)")
     log(f"  This PC:      http://localhost:{a.port}")
     if a.host in ("0.0.0.0", "::", ""):
         for ip in lan_ips():
