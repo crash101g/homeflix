@@ -74,6 +74,8 @@ It's one file and uses nothing outside the Python standard library. You can read
 - A **persistent player bar** with shuffle and repeat that keeps playing while you browse.
 - **Lock-screen and media-key controls** on phones.
 
+<p align="center"><img src="docs/screenshots/music.png" alt="Album view with the track list, the current track highlighted, and the music player bar at the bottom" width="100%"></p>
+
 ### Keyboard-first player
 `Space` play/pause · `←` `→` skip 10s · `↑` `↓` volume · `F` full screen · `M` mute · `N` next episode · `Esc` back
 
