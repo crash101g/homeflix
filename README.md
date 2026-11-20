@@ -89,6 +89,17 @@ It's one file and uses nothing outside the Python standard library. You can read
 - On 13 test recordings from US networks it skipped **80–100% of ad time** (most 97% or more) while skipping 0–67 seconds of the show.
 - Any other video can be checked from the player (**Find ads**), or every video with `--ads all`. The detector is from [TabloView](https://github.com/JoeDV/TabloView) by JoeDV.
 
+<p align="center">
+  <img src="docs/screenshots/ad-skip.jpg" alt="Homeflix player during an ad break: yellow ad-break marks under the seek bar, Skip Ad and Not an ad buttons in the corner, and an Ads: ask toggle in the controls" width="100%">
+  <br><sub>An ad break: the yellow marks under the seek bar show where every break is, and <b>Skip Ad</b> jumps to the end of this one.</sub>
+</p>
+
+- **Works on phones too.** It's all in the web page, so iPhone and Android browsers get the same marks and buttons. Just tap **Skip Ad**.
+
+<p align="center">
+  <img src="docs/screenshots/ad-skip-phone.jpg" alt="The same ad break on a phone held sideways, with the Skip Ad button and ad-break marks" width="70%">
+</p>
+
 ### Keyboard-first player
 `Space` play/pause · `←` `→` skip 10s · `↑` `↓` volume · `F` full screen · `M` mute · `N` next episode · `S` skip ad · `Esc` back
 
