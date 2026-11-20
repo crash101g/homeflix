@@ -10,7 +10,8 @@ No Docker. No database. No account. No `pip install`. Just `python3 homeflix.py`
 
 ![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue?logo=python&logoColor=white)
 ![Dependencies: zero](https://img.shields.io/badge/dependencies-zero-brightgreen)
-![Single file](https://img.shields.io/badge/single%20file-~1500%20lines-orange)
+![Single file](https://img.shields.io/badge/single%20file-~2600%20lines-orange)
+![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)
 ![Self-hosted](https://img.shields.io/badge/self--hosted-100%25-purple)
 
 </div>
@@ -23,7 +24,7 @@ No Docker. No database. No account. No `pip install`. Just `python3 homeflix.py`
 
 You already own the movies, the shows and the albums. They're sitting in a folder named `Downloads` with filenames like `The.Show.S02E07.1080p.WEB.x265-GRP.mkv`.
 
-**Homeflix turns that folder into a polished streaming app.** Open it on any phone, laptop or smart TV browser in your house. You get poster rows, a "Who's watching?" screen, Continue Watching, binge-ready TV seasons, and a music player that works from your phone's lock screen.
+**Homeflix turns that folder into a polished streaming app.** Open it on any phone, laptop or smart TV browser in your house. You get poster rows, a "Who's watching?" screen, Continue Watching, binge-ready TV seasons, **commercial skipping for your TV recordings**, and a music player that works from your phone's lock screen.
 
 It's one file and uses nothing outside the Python standard library. You can read all of it in an afternoon, and it runs on whatever machine already has your media on it.
 
@@ -42,8 +43,9 @@ It's one file and uses nothing outside the Python standard library. You can read
 | **Dependencies** | Python standard library (ffmpeg optional) | Dozens of packages and services |
 | **Phones home?** | Never. No telemetry, no cloud login | Often requires an online account |
 | **Runs on** | Linux, macOS, Windows | Varies |
+| **Skips ads in TV recordings** | Yes, found on your own PC | Often a paid add-on or a separate tool (Comskip) |
 | **Client apps** | Any web browser | Often platform-specific apps |
-| **Auditable** | ~1,500 lines you can actually read | Hundreds of thousands |
+| **Auditable** | ~2,600 lines you can actually read | Hundreds of thousands |
 
 ## 🍿 What you get
 
@@ -79,8 +81,16 @@ It's one file and uses nothing outside the Python standard library. You can read
 
 <p align="center"><img src="docs/screenshots/music.png" alt="Album view with the track list, the current track highlighted, and the music player bar at the bottom" width="100%"></p>
 
+### Skips the commercials in TV recordings
+- Recorded TV (`.ts`, `.m2ts`, `.mpg` from a DVR, Tablo, HDHomeRun or a capture card) is checked for ad breaks **in the background, on your own PC**. Nothing is sent anywhere.
+- Breaks show as **yellow marks on the timeline**. Press **Skip Ad** (or `S`) when one comes up, or switch the player to **auto-skip** with an **Undo** button.
+- Got one wrong? Press **Not an ad** and that part is never skipped again.
+- Works like the network does: most channels take their corner logo off for the ads, so a minute or more without it is a break, snapped to the black, silent moment where the show stops and starts. Channels without a logo fall back to how the picture looks. It's tuned to **skip too little rather than too much**, and if the show and ads can't be told apart it marks nothing.
+- On 13 test recordings from US networks it skipped **80–100% of ad time** (most 97% or more) while skipping 0–67 seconds of the show.
+- Any other video can be checked from the player (**Find ads**), or every video with `--ads all`. The detector is from [TabloView](https://github.com/JoeDV/TabloView) by JoeDV.
+
 ### Keyboard-first player
-`Space` play/pause · `←` `→` skip 10s · `↑` `↓` volume · `F` full screen · `M` mute · `N` next episode · `Esc` back
+`Space` play/pause · `←` `→` skip 10s · `↑` `↓` volume · `F` full screen · `M` mute · `N` next episode · `S` skip ad · `Esc` back
 
 ## 🚀 Up and running in 60 seconds
 
@@ -157,6 +167,7 @@ python homeflix.py --videos "D:\Movies" --music "%USERPROFILE%\Music"   # Window
 | `--quality LEVEL` | Quality for files that must be converted: `balanced`, `high` (default) or `max` |
 | `--rescan-minutes N` | Auto-rescan interval (default 15, `0` disables) |
 | `--no-thumbs` | Skip thumbnail generation |
+| `--ads MODE` | Find ad breaks in the background: `auto` (TV recordings: `.ts`, `.m2ts`, `.mpg`; default), `all` (every video) or `off` (only when you press **Find ads** in the player) |
 | `--quiet` | Don't log every HTTP request |
 | `--version` | Print the version and exit. The version is also shown at startup and next to the logo in the web app. |
 
@@ -183,7 +194,8 @@ A tool that serves files from your disk should be paranoid, so Homeflix is:
 | `homeflix` command | `~/.local/bin/homeflix` | `~/.local/bin/homeflix` | `%LOCALAPPDATA%\Programs\Homeflix\homeflix.cmd` |
 | Settings (port, folders, password, quality) | `~/.config/homeflix/env` | `~/Library/Application Support/Homeflix/env` | `%APPDATA%\Homeflix\env` |
 | Profiles, watch progress, My List | `~/.local/share/homeflix/state.json` | `~/Library/Application Support/Homeflix/state.json` | `%APPDATA%\Homeflix\state.json` |
-| Thumbnails, probe cache, extracted subs (safe to delete) | `~/.cache/homeflix/` | `~/Library/Caches/Homeflix/` | `%LOCALAPPDATA%\Homeflix\Cache\` |
+| Parts you marked "Not an ad" | `~/.local/share/homeflix/not_ads.json` | `~/Library/Application Support/Homeflix/not_ads.json` | `%APPDATA%\Homeflix\not_ads.json` |
+| Thumbnails, probe cache, extracted subs, ad breaks found (safe to delete) | `~/.cache/homeflix/` | `~/Library/Caches/Homeflix/` | `%LOCALAPPDATA%\Homeflix\Cache\` |
 
 **Service commands** (only if you installed with `--service` / `--autostart`)
 
@@ -200,11 +212,19 @@ A tool that serves files from your disk should be paranoid, so Homeflix is:
 ## 🧰 Requirements
 
 - **Python 3.8+** on Linux, macOS or Windows. That's the only hard requirement.
-- **ffmpeg / ffprobe** (optional, strongly recommended) for thumbnails, durations, tags, embedded subtitles and converting formats browsers can't play.
+- **ffmpeg / ffprobe** (optional, strongly recommended) for thumbnails, durations, tags, embedded subtitles, finding ad breaks and converting formats browsers can't play.
 
 ## 📜 License
 
-MIT. See [LICENSE](LICENSE).
+Homeflix is free software under the **GNU General Public License v3.0 or later**. See [LICENSE](LICENSE).
+
+You can use, change and share it freely. If you share a changed version, you must share its source code under the same license.
+
+Versions up to 1.2.1 were released under the MIT license.
+
+### Credits
+
+The commercial-break detector comes from [TabloView](https://github.com/JoeDV/TabloView) by JoeDV (GPL-3.0). It was adapted for local files: the Tablo, database and optional Claude parts were left out, and it was changed to run on Python 3.8. Thanks to JoeDV for the detector and for the tuning against real broadcasts.
 
 ---
 

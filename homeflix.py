@@ -10,8 +10,25 @@ Homeflix - a self-hosted, Netflix-style media server for your LAN.
 * Subtitles: sidecar .srt/.vtt and embedded text subs
 * Optional password, files served by opaque ID only (no path traversal)
 
+* Finds commercial breaks in TV recordings and skips them (detector from TabloView)
+
 Python 3.8+ standard library only. ffmpeg/ffprobe are optional but strongly
-recommended (thumbnails, durations, tags, transcoding).
+recommended (thumbnails, durations, tags, transcoding, finding ad breaks).
+
+Copyright (C) 2026 crash101g
+Commercial-break detector: Copyright (C) JoeDV, from TabloView
+(https://github.com/JoeDV/TabloView), used under the GPL-3.0.
+
+This program is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software Foundation,
+either version 3 of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with this
+program. If not, see <https://www.gnu.org/licenses/>.
 """
 import argparse
 import hashlib
@@ -33,8 +50,9 @@ import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -720,6 +738,940 @@ class State:
 
 
 # ----------------------------------------------------------------------------
+# Commercial breaks
+#
+# The detector below (from THUMB_W down to _not_over_rating) is taken from TabloView by JoeDV,
+# https://github.com/JoeDV/TabloView (app/commercials.py, commit b65ee70, GPL-3.0), with these
+# changes: int.bit_count() replaced for Python 3.8; TabloView's Tablo, database, settings and
+# Claude code left out. Its comments describe TabloView's test recordings and are kept as written.
+#
+# How it works (from TabloView): one low-priority ffmpeg pass per recording measures black frames,
+# silences, the four corners of every second (where networks keep their logo, which they take off
+# for the ads) and a tiny colour thumbnail per second. A break is where the logo is gone for a
+# minute or more, or, for channels without a logo, a long run that doesn't look like the show; its
+# edges are snapped to the black, silent moments where the show stops and starts. It is tuned to
+# skip too little rather than too much.
+# ----------------------------------------------------------------------------
+def _popcount(x: int) -> int:
+    return bin(x).count("1")
+
+
+THUMB_W, THUMB_H = 32, 18  # the per-second frame size (rgb24)
+BINS = 64  # 4 levels each of red, green and blue
+SMOOTH_SECONDS = 15  # majority vote over this window evens out single odd frames
+# US commercial breaks run a minute or more; shorter odd-looking stretches are the show's own graphics
+# (e.g. Jeopardy's red Final Jeopardy reveal, 25 s)
+MIN_BREAK_SECONDS = 45
+MERGE_GAP_SECONDS = 10  # a moment of show-like frames inside a break doesn't split it
+SNAP_SECONDS = 8  # move a break edge to a black frame this close
+# An edge without a black frame to anchor it moves this far into the break: better a few seconds of
+# ad than skipping any of the show (what Tablo's own commercial skip got wrong)
+UNANCHORED_TRIM = 3
+MIN_SEPARATION = 0.15  # show and ad scores must be at least this far apart to trust the result
+MAX_AD_PIECE_SECONDS = 300  # between two black-and-silent moments: longer than this is show
+# A piece this short next to an ad piece is part of the same break, whatever it looks like: a dim
+# one-minute drug ad opened a Tracker break and scored like the show (2026-10-25, 62 s). Raising this
+# from 45 changed nothing on the five test recordings
+SHORT_PIECE_SECONDS = 65
+AD_PIECE_SHARE = 0.85  # a piece averaging below this share of the show's long pieces is ads
+LEVEL_SECONDS = 0.05  # the sound's loudness is measured this often (speech dips between syllables)
+
+# The detector, saved with each result: results from an older one are redone (1: colour only;
+# 2: the channel logo, black frames and silences; 3: up to a minute of show-like ad next to a break;
+# 4: a break ends where the show comes back, not a fixed time before the logo does). Not raised for
+# _without_long_pieces (2026-10-30): every copy would re-read every unwatched recording, logo channels
+# too; a show's recordings are redone on request instead (its page, or a recording's menu)
+METHOD = 4
+
+# The channel logo: the bottom-right corner of a 160x90 copy of each second's frame (the logo is a few
+# pixels of light text there, still clear at that size)
+FRAME_W, FRAME_H = 160, 90
+CORNER_W, CORNER_H = 36, 22
+LIGHTER = 12  # a logo pixel is this much lighter than the 5x5 around it, whatever the picture
+LOGO_MIN_PIXELS = 12  # fewer pixels than this that are lighter most of the time: no logo to go by
+LOGO_SEPARATION = 0.3  # seconds with and without the logo must score at least this far apart
+LOGO_SMOOTH_SECONDS = 9
+LOGO_MERGE_GAP = 35  # a network promo with the logo on (15-30 s), inside a break, doesn't split it
+LOGO_SNAP_SECONDS = 12  # move a break edge to a black-and-silent moment (or a black frame) this close
+# The logo comes back this long after the show does: Fox shows its TV rating badge instead for the
+# first seconds back (Hell's Kitchen: 15-16 s after each of four breaks). If a channel brings it back
+# at once, the cost is a few seconds of ad left in, not show skipped
+LOGO_RETURN_LAG = 15
+# ABC brings it back later still: 18-37 s after the show (Shark Tank, 2026-10-29; ending each break
+# LOGO_RETURN_LAG before the logo skipped up to 22 s of the show). So a break ends at its last
+# black-and-silent moment up to this long before the logo returns
+LOGO_RETURN_MAX = 45
+# A break has the logo gone for at least LOGO_SOLID_SECONDS in a row (ignoring blips of it of up to
+# LOGO_BLIP_SECONDS). ABC's see-through logo dropped out for 5-10 s at a time on bright scenes, and
+# 87 s of Shark Tank was taken for a break
+LOGO_SOLID_SECONDS = 20
+LOGO_BLIP_SECONDS = 1
+# A faint logo: CBS's see-through eye is ~5 px wide in the 160x90 copy, too faint for the corners above
+# (and lit in under half the seconds: it vanishes on bright scenes, and ads are a quarter of the time).
+# In a 480x270 copy's corners (EYE_W x EYE_H) it's a clear ring. A pixel EYE_LIGHTER lighter than the
+# 5x5 around it (worked out by FFmpeg) and lit in over EYE_PIXEL_SHARE of the seconds is the logo; at
+# least EYE_MIN_PIXELS of them, or there's none; a second with EYE_ON of them lit has it on. On
+# Survivor that's on in 91% of show seconds and 6% of ad seconds
+EYE_SCALE_W, EYE_SCALE_H = 480, 270
+EYE_W, EYE_H = 108, 66
+EYE_LIGHTER = 8
+EYE_PIXEL_SHARE = 0.35
+EYE_MIN_PIXELS = 20
+EYE_ON = 0.3
+EYE_EDGE = 3
+EYE_GONE_EARLY = 20  # a break starts at the first black frame this long after the eye goes
+EYE_SAMPLE = 5  # which pixels are the logo: judged from every 5th second (the same answer, a fifth of the work)
+# The TV rating (TV-14 V...) in the top-left third of the same 480x270 copy: networks show it when the
+# show starts and as it comes back from breaks (ABC's 9-1-1 and NBC's SVU, 2026-10-30: after every
+# break; CBS: at the top of each hour). ABC and CBS put it in a box, NBC just writes it, so it's
+# learned rather than looked for: what stays put (lit in RATING_STEADY seconds running) in a compact
+# patch of the corner during the recording's first RATING_OPENING seconds, the most of it; then every
+# second where RATING_MATCH of those pixels are lit again. On five recordings the show's own rating
+# matched at 0.87-1.0 and nothing else above 0.56: promos carry ratings too, but others or smaller
+# (9-1-1: TV-14 LV and TV-PG DL), as do The Price Is Right's price tags and busy pictures. Trusted only
+# when seen again after the opening (else it might be an ad's still graphic). A suggestion from the user
+RATING_W, RATING_H = 160, 90
+RATING_OPENING = 180
+RATING_STEADY = 8
+RATING_MIN_PIXELS = 60
+RATING_MAX_W, RATING_MAX_H = 70, 66  # 9-1-1's box 36x43, SVU's lettering 39x40, CBS's box 35x33
+RATING_MATCH = 0.75
+RATING_MIN_SECONDS = 2  # seen in at least this many seconds of one showing
+RATING_GAP = 3  # seconds it may go unseen within one showing
+RATING_LOOKBACK = 60  # the show came back at the last black frame up to this long before its rating
+# NBC lets its own promos run after the logo is back (SVU: 13 and 15 s): a rating this soon after a
+# break's end moves the end to the last black-and-silent moment before the rating
+RATING_AFTER = 30
+
+
+def histogram(frame: bytes) -> List[float]:
+    """64-bin colour histogram of one rgb24 frame, as fractions of the pixels."""
+    h = [0] * BINS
+    for p in range(0, len(frame) - 2, 3):
+        h[(frame[p] >> 6) * 16 + (frame[p + 1] >> 6) * 4 + (frame[p + 2] >> 6)] += 1
+    total = len(frame) // 3 or 1
+    return [x / total for x in h]
+
+
+def black_frames(ffmpeg_log: str) -> List[float]:
+    """Midpoints of the black frames FFmpeg's blackdetect reported, in seconds."""
+    return [(float(a) + float(b)) / 2
+            for a, b in re.findall(r"black_start:([\d.]+) black_end:([\d.]+)", ffmpeg_log)]
+
+
+def _mean(hs: Sequence[List[float]]) -> List[float]:
+    n = len(hs) or 1
+    return [sum(h[k] for h in hs) / n for k in range(BINS)]
+
+
+def _similarity(a: List[float], b: List[float]) -> float:
+    return sum(min(x, y) for x, y in zip(a, b))
+
+
+def _threshold(values: List[float]) -> Tuple[float, float, float]:
+    """Split values into two groups (1-D k-means): (threshold, low centre, high centre)."""
+    lo, hi = min(values), max(values)
+    for _ in range(20):
+        t = (lo + hi) / 2
+        low = [v for v in values if v < t] or [lo]
+        high = [v for v in values if v >= t] or [hi]
+        lo, hi = sum(low) / len(low), sum(high) / len(high)
+    return (lo + hi) / 2, lo, hi
+
+
+def _runs(flags: List[bool]) -> List[Tuple[int, int]]:
+    """[start, end) index ranges where flags is True."""
+    runs, start = [], None
+    for i, f in enumerate(flags + [False]):
+        if f and start is None:
+            start = i
+        elif not f and start is not None:
+            runs.append((start, i))
+            start = None
+    return runs
+
+
+def loudness(ffmpeg_log: str) -> List[float]:
+    """The sound's level (dB) every LEVEL_SECONDS, in order, from astats/ametadata in the log."""
+    return [float(v) if v not in ("-inf", "nan") else -120.0
+            for v in re.findall(r"lavfi\.astats\.Overall\.RMS_level=(\S+)", ffmpeg_log)]
+
+
+def silences(ffmpeg_log: str) -> List[Tuple[float, float]]:
+    """(start, end) of the silences FFmpeg's silencedetect reported, in seconds."""
+    return [(float(a), float(b)) for a, b in
+            re.findall(r"silence_start: ([\d.]+)[\s\S]*?silence_end: ([\d.]+)", ffmpeg_log)]
+
+
+def lighter_pixels(corner: bytes) -> List[bool]:
+    """Which pixels of a grey CORNER_W x CORNER_H corner are clearly lighter than the 5x5 around them."""
+    w, h = CORNER_W, CORNER_H
+    # Sums of every rectangle from the top left, so each 5x5 average is four lookups
+    sat = [[0] * (w + 1) for _ in range(h + 1)]
+    for y in range(h):
+        row = 0
+        for x in range(w):
+            row += corner[y * w + x]
+            sat[y + 1][x + 1] = sat[y][x + 1] + row
+    out = []
+    for y in range(h):
+        y0, y1 = max(0, y - 2), min(h, y + 3)
+        for x in range(w):
+            x0, x1 = max(0, x - 2), min(w, x + 3)
+            total = sat[y1][x1] - sat[y0][x1] - sat[y1][x0] + sat[y0][x0]
+            out.append(corner[y * w + x] - total / ((y1 - y0) * (x1 - x0)) > LIGHTER)
+    return out
+
+
+def logo_scores(corners: List[Union[bytes, Sequence[bool]]]) -> Optional[Tuple[List[float], float, float]]:
+    """Per second, how much the channel's logo is in this corner, the score that separates "on"
+    from "off", and how clearly they separate; None if there's no logo here to go by. A corner is
+    its grey pixels, or already which of them are lit (lighter_pixels; the test recordings keep that)."""
+    marks = [lighter_pixels(c) if isinstance(c, (bytes, bytearray)) else c for c in corners]
+    n = len(marks)
+    if n < 120:
+        return None
+    freq = [sum(m[i] for m in marks) / n for i in range(len(marks[0]))]
+    logo = [i for i, f in enumerate(freq) if f > 0.5]  # light in most seconds: the logo
+    rest = [i for i, f in enumerate(freq) if f < 0.2]  # the picture
+    if len(logo) < LOGO_MIN_PIXELS or not rest:
+        return None
+    # Logo pixels lit, beyond what a busy picture lights everywhere anyway
+    scores = [sum(m[i] for i in logo) / len(logo) - sum(m[i] for i in rest) / len(rest) for m in marks]
+    t, lo, hi = _threshold(scores)
+    # A QR code in an ad's corner can pass for the logo (about two thirds of its pixels lit); a
+    # stricter cut-off would lose the logo over bright scenes too, so LOGO_MERGE_GAP bridges such ads
+    return (scores, t, hi - lo) if hi - lo >= LOGO_SEPARATION else None
+
+
+# A "logo" gone this long in the middle of a show isn't the channel's: no break runs that long
+LOGO_GONE_MAX = 7 * 60
+
+
+def _gone_too_long(scores: List[float], t: float) -> bool:
+    """Whether this corner's mark is missing for longer than any break, away from the start and end.
+    The Floor (Fox, 2026-11-16) had a graphic top left for its first 28 minutes only: it separated
+    a little more clearly than Fox's own logo (bottom right), so the rest of the show, 29 minutes,
+    was taken for three breaks of 8 to 11 minutes."""
+    return any(b["end"] - b["start"] > LOGO_GONE_MAX for b in _logo_breaks(scores, t, [], []))
+
+
+def best_logo(corners: List[Sequence[bytes]]) -> Optional[Tuple[List[float], float]]:
+    """The corner with the channel's logo (most networks: bottom right; some channels use another):
+    the clearest one whose mark is never gone for longer than a break. None: no logo to go by."""
+    found = [(k, f) for k in range(len(corners[0])) if (f := logo_scores([c[k] for c in corners]))]
+    if not found:
+        return None
+    # None that stays: not a logo at all, but something like a station's weather bar, there over show
+    # and ads alike until it's taken down (Jeopardy on WTHR, 2026-11-16: gone for 10 minutes of the show,
+    # which became a 9½-minute "break"). Colour, as for channels without a logo
+    likely = [(k, f) for k, f in found if not _gone_too_long(f[0], f[1])]
+    if not likely:
+        return None
+    k, (scores, t, _) = max(likely, key=lambda kf: kf[1][2])
+    if not _logo_breaks(scores, t, [], []):
+        # Never gone, so not the channel's logo but a station's box over show and ads alike (Scrubs,
+        # ABC, 2026-11-12: "Storm Track", the time and temperature bottom right for all 31 minutes, and
+        # the network's see-through logo just above it, lit in only half the seconds of the show). The
+        # logo may still be in that corner, among the pixels that come and go
+        inner = _logo_among_rest([c[k] for c in corners])
+        return inner if inner and not _gone_too_long(*inner) and _logo_breaks(*inner, [], []) else None
+    return scores, t
+
+
+# Lit in nearly every second: part of something that stays (a station's box), not a logo that leaves
+STEADY_SHARE = 0.9
+# In _logo_among_rest, a logo pixel is lit this much more often with the logo than without it
+TOGETHER = 0.3
+
+
+def _logo_among_rest(corners: List[Union[bytes, Sequence[bool]]]) -> Optional[Tuple[List[float], float]]:
+    """A corner's logo once what stays on screen is set aside: of the pixels lit often but not always,
+    the ones that come and go together. From all of them, a first guess at the seconds with the logo;
+    then, a few times over, the pixels lit much more in those seconds than in the others, and the
+    seconds from those. None if they don't settle into a clear logo."""
+    marks = [lighter_pixels(c) if isinstance(c, (bytes, bytearray)) else c for c in corners]
+    n = len(marks)
+    freq = [sum(m[i] for m in marks) / n for i in range(len(marks[0]))]
+    logo = [i for i, f in enumerate(freq) if 0.2 < f <= STEADY_SHARE]
+    rest = [i for i, f in enumerate(freq) if f < 0.2]
+    for _ in range(5):
+        if len(logo) < LOGO_MIN_PIXELS or not rest:
+            return None
+        scores = [sum(m[i] for i in logo) / len(logo) - sum(m[i] for i in rest) / len(rest) for m in marks]
+        t, lo, hi = _threshold(scores)
+        on = [s >= t for s in scores]
+        with_logo = sum(on)
+        if not 0 < with_logo < n:
+            return None
+        lit_on = [sum(m[i] for m, o in zip(marks, on) if o) / with_logo for i in range(len(freq))]
+        lit_off = [sum(m[i] for m, o in zip(marks, on) if not o) / (n - with_logo) for i in range(len(freq))]
+        new = [i for i in range(len(freq)) if lit_on[i] - lit_off[i] > TOGETHER]
+        if new == logo:
+            break
+        logo = new
+    return (scores, t) if hi - lo >= LOGO_SEPARATION else None
+
+
+def _logo_breaks(scores: List[float], t: float, edges: List[float], blacks: List[float],
+                 nearest_start: bool = False) -> List[Dict[str, float]]:
+    """Breaks from the seconds without the logo; edges are the black-and-silent moments."""
+    n = len(scores)
+    on = [s >= t for s in scores]
+    half = LOGO_SMOOTH_SECONDS // 2
+    smooth = [sum(on[max(0, i - half):i + half + 1]) * 2 > len(on[max(0, i - half):i + half + 1]) for i in range(n)]
+    merged: List[List[int]] = []
+    for s, e in _runs([not x for x in smooth]):
+        if merged and s - merged[-1][1] <= LOGO_MERGE_GAP:
+            merged[-1][1] = e
+        else:
+            merged.append([s, e])
+    # Where the logo is gone for good (a second or two of it showing aside): a break has at least one
+    # such stretch and its edges are at the first and last of them. A see-through logo (ABC) flickers
+    # out on bright scenes in the show, which the smoothing alone took for breaks or joined onto them
+    off = [not x for x in on]
+    for s, e in _runs(on):
+        if e - s <= LOGO_BLIP_SECONDS:
+            off[s:e] = [True] * (e - s)
+    solid = [r for r in _runs(off) if r[1] - r[0] >= LOGO_SOLID_SECONDS]
+    trimmed = []
+    for s, e in merged:
+        inside = [r for r in solid if r[0] < e and r[1] > s]
+        if inside:
+            trimmed.append([max(s, inside[0][0]), min(e, inside[-1][1])])
+    merged = trimmed
+
+    def snap(t: float, marks: List[float]) -> Optional[float]:
+        near = [b for b in marks if abs(b - t) <= LOGO_SNAP_SECONDS]
+        return min(near, key=lambda b: abs(b - t)) if near else None
+
+    def last_before(t: float, marks: List[float]) -> Optional[float]:
+        near = [b for b in marks if t - LOGO_RETURN_MAX <= b <= t]
+        return max(near) if near else None
+
+    breaks = []
+    for s, e in merged:
+        if e - s < MIN_BREAK_SECONDS:
+            continue
+        if s == 0 or e == n:
+            # At the start or end of the recording: the show's own opening and closing often run
+            # without the logo too, so only up to (from) the last (first) black-and-silent moment
+            inside = [b for b in edges if s <= b <= e]
+            if not inside:
+                continue
+            start, end = (0.0, max(inside)) if s == 0 else (min(inside), float(n))
+            if end - start >= 10:
+                breaks.append({"start": round(start, 1), "end": round(end, 1)})
+            continue
+        # The faint logo (nearest_start): CBS takes the eye off up to ~15 s before it cuts away (The Price
+        # Is Right, 2026-10-30: gone at 35:48, black at 36:01), so the first black frame after it goes
+        if nearest_start:
+            after = [b for b in blacks if s - 2 <= b <= s + EYE_GONE_EARLY]
+            start = min(after) if after else None
+        else:
+            start = snap(float(s), edges) or snap(float(s), blacks)
+        start = float(s) + 1 if start is None else start
+        # The show comes back before the logo does, at the break's last black frame (silent on ABC,
+        # not always on Fox); without one, LOGO_RETURN_LAG before the logo
+        end = last_before(float(e), blacks)
+        if end is None or end <= start:
+            back = float(e) - LOGO_RETURN_LAG
+            end = snap(back, blacks)
+            end = back if end is None else end
+        if end - start >= MIN_BREAK_SECONDS:
+            breaks.append({"start": round(start, 1), "end": round(end, 1)})
+    return breaks
+
+
+def find_breaks(hists: List[List[float]], blacks: List[float], corners: Optional[List[Sequence[bytes]]] = None,
+                quiet: Optional[List[Tuple[float, float]]] = None,
+                program_end: Optional[float] = None, how: Optional[Dict[str, str]] = None,
+                eye: Optional[List[float]] = None,
+                rating: Optional[List[Sequence[int]]] = None) -> Optional[List[Dict[str, float]]]:
+    """Commercial breaks as [{'start', 'end'}] in seconds, or None if this recording's show and ads
+    can't be told apart reliably. corners and quiet (silences) are used when there are any: the
+    channel logo, edges at black frames that are also silent. program_end: where the show is
+    scheduled to end in the recording. eye: per second, how much of a faint logo is showing in a
+    bigger corner (eye_scores), for channels without a clear one. rating: when the show's own rating
+    box shows (rating_boxes), never inside a break."""
+    found = _find_breaks(hists, blacks, corners, quiet, program_end, how, eye)
+    return _not_over_rating(found, rating or [], sorted(blacks), _edges(blacks, quiet))
+
+
+def _edges(blacks: List[float], quiet: Optional[List[Tuple[float, float]]]) -> List[float]:
+    """Black frames that are also silent (all black frames when there's no sound measured)."""
+    return sorted(b for b in blacks if any(a - 1 <= b <= z + 1 for a, z in quiet)) if quiet else sorted(blacks)
+
+
+def _find_breaks(hists: List[List[float]], blacks: List[float], corners: Optional[List[Sequence[bytes]]],
+                 quiet: Optional[List[Tuple[float, float]]], program_end: Optional[float],
+                 how: Optional[Dict[str, str]], eye: Optional[List[float]]) -> Optional[List[Dict[str, float]]]:
+    edges = _edges(blacks, quiet)
+    if corners:
+        found = best_logo([(c,) if isinstance(c, bytes) else c for c in corners])
+        if found:
+            if how is not None:
+                how["by"] = "logo"
+            return _logo_breaks(found[0], found[1], edges, sorted(blacks))
+    if how is not None:
+        how["by"] = "colour"  # which way it went, saved with the result: a later fix can redo just these
+    breaks = _colour_breaks(hists, blacks, edges, quiet, program_end)
+    if not eye:
+        return breaks
+    # A faint logo (the CBS eye) as well: a break found either way. On three CBS recordings the eye
+    # alone never skipped any show and found what colour missed (Survivor 59% -> 96% of the ads),
+    # while colour found the breaks full of CBS's own promos, which carry the eye (2026-10-30)
+    if how is not None:
+        how["by"] = "colour+eye"
+    by_eye = _logo_breaks(eye, EYE_ON, edges, sorted(blacks), nearest_start=True)
+    return _join((breaks or []) + by_eye) if breaks is not None or by_eye else breaks
+
+
+def _colour_breaks(hists: List[List[float]], blacks: List[float], edges: List[float],
+                   quiet: Optional[List[Tuple[float, float]]], program_end: Optional[float]) -> Optional[List[Dict[str, float]]]:
+    """No clear logo: the seconds that don't look like the show, and the pieces between black-and-
+    silent moments that look like ads on average. None if show and ads don't separate."""
+    n = len(hists)
+    if n < 120:
+        return None
+    # What the show looks like: start from the longest stretch between black frames (almost always
+    # show), then refine from every second that matched it
+    cuts = [0.0] + sorted(blacks) + [float(n)]
+    a, b = max(zip(cuts, cuts[1:]), key=lambda s: s[1] - s[0])
+    ref = _mean(hists[int(a):max(int(b), int(a) + 1)])
+    for _ in range(2):
+        scores = [_similarity(h, ref) for h in hists]
+        t, lo, hi = _threshold(scores)
+        ref = _mean([h for h, s in zip(hists, scores) if s >= t])
+    if hi - lo < MIN_SEPARATION:
+        return None
+
+    show = [s >= t for s in scores]
+    half = SMOOTH_SECONDS // 2
+    smooth = [sum(show[max(0, i - half):i + half + 1]) * 2 > len(show[max(0, i - half):i + half + 1])
+              for i in range(n)]
+    ads = _runs([not s for s in smooth])
+    merged: List[List[int]] = []
+    for s, e in ads:
+        if merged and s - merged[-1][1] <= MERGE_GAP_SECONDS:
+            merged[-1][1] = e
+        else:
+            merged.append([s, e])
+
+    def snap(t: float) -> Optional[float]:
+        near = [b for b in blacks if abs(b - t) <= SNAP_SECONDS]
+        return min(near, key=lambda b: abs(b - t)) if near else None
+
+    breaks = []
+    for s, e in merged:
+        if e - s < MIN_BREAK_SECONDS:
+            continue
+        start, end = snap(float(s)), snap(float(e))
+        # A real break has a black frame at one edge at least (or runs to the start or end of the recording)
+        if start is None and end is None and 0 < s and e < n:
+            continue
+        start = float(s) + UNANCHORED_TRIM if start is None else start
+        end = float(e) - UNANCHORED_TRIM if end is None else end
+        breaks.append({"start": round(start if s > 0 else 0.0, 1), "end": round(end if e < n else float(n), 1)})
+    if quiet:
+        breaks = _join(breaks + _marked_pieces(scores, t, edges, n, program_end))
+        breaks = _without_long_pieces(breaks, edges, n)
+        breaks = _opening_to_edge(breaks, edges)
+    return breaks
+
+
+def _opening_to_edge(breaks: List[Dict[str, float]], edges: List[float]) -> List[Dict[str, float]]:
+    """A break at the very start of the recording (the end of whatever aired before) that doesn't end
+    at a black-and-silent moment ends at its last one instead: Survivor's ran on from 0:20 to a black
+    frame at 0:54, skipping the show's first 31 s (2026-10-30). The other seven test recordings'
+    openings end at such a moment already, or have none."""
+    out = []
+    for br in breaks:
+        if br["start"] < 1 and not any(abs(e - br["end"]) <= 1 for e in edges):
+            before = [e for e in edges if 10 <= e < br["end"]]
+            if before:
+                br = {"start": 0.0, "end": round(max(before), 1)}
+        out.append(br)
+    return out
+
+
+def _without_long_pieces(breaks: List[Dict[str, float]], edges: List[float], n: int) -> List[Dict[str, float]]:
+    """A break never holds a whole stretch of more than MAX_AD_PIECE_SECONDS between two black-and-
+    silent moments: that stretch is show, and is cut out of it. Survivor's firelit Tribal Council
+    (597 s between two of them) scored less like the show than the ads did, and colour alone took
+    75:21-87:34 for one break, ten minutes of show (2026-10-30). Only a stretch wholly inside the
+    break: Jeopardy's breaks start without such a moment, so the stretch before each one runs into it
+    and is left alone."""
+    cuts: List[float] = []
+    for b in [0.0] + edges + [float(n)]:
+        if not cuts or b - cuts[-1] > 5:
+            cuts.append(b)
+    long_pieces = [(a, b) for a, b in zip(cuts, cuts[1:]) if b - a > MAX_AD_PIECE_SECONDS]
+    out = []
+    for br in breaks:
+        parts = [(br["start"], br["end"])]
+        for a, b in long_pieces:
+            kept = []
+            for s, e in parts:
+                if s - 1 <= a and b <= e + 1:
+                    kept += [p for p in ((s, a), (b, e)) if p[1] - p[0] >= MIN_BREAK_SECONDS]
+                else:
+                    kept.append((s, e))
+            parts = kept
+        out += [{"start": round(s, 1), "end": round(e, 1)} for s, e in parts]
+    return out
+
+
+def _marked_pieces(scores: List[float], t: float, edges: List[float], n: int,
+                   program_end: Optional[float] = None) -> List[Dict[str, float]]:
+    """Without a logo: the black-and-silent moments mark nearly every break edge and the changes
+    between ads (on a Price Is Right recording, 14 of 16 edges and almost nothing in the show), so
+    the pieces between them that look like ads on average are ads. One second at a time, the show's
+    colourful set and the ads overlap; a piece's average doesn't (ads 0.12-0.42, show 0.47-0.62)."""
+    cuts: List[float] = []
+    for b in [0.0] + edges + [float(n)]:
+        if not cuts or b - cuts[-1] > 5:
+            cuts.append(b)
+    spans = list(zip(cuts, cuts[1:]))
+    means = [sum(scores[int(a):max(int(b), int(a) + 1)]) / max(1, len(scores[int(a):max(int(b), int(a) + 1)])) for a, b in spans]
+    # What the show's pieces look like: no break runs past MAX_AD_PIECE_SECONDS, so the long pieces
+    # are show. A piece clearly below them is ads (Boston Blue: show 0.67-0.74, two whole breaks
+    # 0.56-0.57, above the recording-wide cut-off). Without long pieces, that cut-off
+    long_means = sorted(m for (a, b), m in zip(spans, means) if b - a > MAX_AD_PIECE_SECONDS)
+    cut = long_means[len(long_means) // 2] * AD_PIECE_SHARE if long_means else t
+    ad = [b - a <= MAX_AD_PIECE_SECONDS and m < cut for (a, b), m in zip(spans, means)]
+    # The show's last segment often runs straight into the closing break with no black-and-silent
+    # moment between them (Jeopardy: Final Jeopardy and the station's ads were one piece, and the
+    # piece looked like ads), so a piece across the scheduled end is never taken whole
+    if program_end:
+        ad = [x and not (a + 5 < program_end < b - 5) for (a, b), x in zip(spans, ad)]
+    # A short piece against an ad piece is the rest of that break (an ad brighter than most): the
+    # show never runs that briefly between two of these moments
+    for i, (a, b) in enumerate(spans):
+        if not ad[i] and b - a <= SHORT_PIECE_SECONDS and ((i and ad[i - 1]) or (i + 1 < len(ad) and ad[i + 1])):
+            ad[i] = True
+    return [{"start": round(a, 1), "end": round(b, 1)} for (a, b), x in zip(spans, ad) if x]
+
+
+def _join(breaks: List[Dict[str, float]]) -> List[Dict[str, float]]:
+    """Overlapping or touching breaks as one, in order."""
+    out: List[Dict[str, float]] = []
+    for b in sorted(breaks, key=lambda x: x["start"]):
+        if out and b["start"] <= out[-1]["end"] + 1:
+            out[-1]["end"] = max(out[-1]["end"], b["end"])
+        else:
+            out.append(dict(b))
+    return [b for b in out if b["end"] - b["start"] >= 10]
+
+
+
+# Each second FFmpeg sends one OUT_W x OUT_H rgb24 frame: the colour thumbnail on top (padded to the
+# corners' width) and the four grey corners below it, in CORNERS order
+CORNERS = ("top left", "top right", "bottom left", "bottom right")
+OUT_W, OUT_H = CORNER_W, THUMB_H + len(CORNERS) * CORNER_H
+
+
+def analysis_graph() -> str:
+    """FFmpeg's filter graph for the one pass: [bd] black frames, [o] the per-second frame, [sd]
+    silences and [lv] loudness every LEVEL_SECONDS (the last three printed to the log)."""
+    x, y = FRAME_W - CORNER_W, FRAME_H - CORNER_H
+    crops = [(0, 0), (x, 0), (0, y), (x, y)]
+    labels = "".join(f"[k{i}]" for i in range(len(crops)))
+    return (f"[0:v]scale=320:-2,split[a][b];[a]blackdetect=d=0.05:pix_th=0.10[bd];"
+            f"[b]fps=1,scale={FRAME_W}:{FRAME_H},format=rgb24,split={len(crops) + 1}[p]{labels};"
+            f"[p]scale={THUMB_W}:{THUMB_H},pad={OUT_W}:{THUMB_H}[t];"
+            + "".join(f"[k{i}]crop={CORNER_W}:{CORNER_H}:{cx}:{cy},format=gray,format=rgb24[c{i}];" for i, (cx, cy) in enumerate(crops))
+            + "[t]" + "".join(f"[c{i}]" for i in range(len(crops))) + f"vstack=inputs={len(crops) + 1},format=rgb24[o];"
+            f"[0:a]asplit[a1][a2];[a1]silencedetect=n=-50dB:d=0.15[sd];"
+            f"[a2]aformat=sample_rates=8000:channel_layouts=mono,asetnsamples=n={int(8000 * LEVEL_SECONDS)}:p=0,"
+            f"astats=metadata=1:reset=1:measure_overall=RMS_level:measure_perchannel=none,"
+            f"ametadata=mode=print:key=lavfi.astats.Overall.RMS_level[lv];"
+            # [big]: which pixels of each bigger corner are lighter than the 5x5 around them, 1 bit each
+            f"[0:v]fps=1,scale={EYE_SCALE_W}:{EYE_SCALE_H},format=gray,split=2[e1][e2];[e2]boxblur=2:1[e3];"
+            f"[e1][e3]blend=all_expr='if(gt(A\\,B+{EYE_LIGHTER})\\,255\\,0)',split=5" + "".join(f"[g{i}]" for i in range(5)) + ";"
+            + "".join(f"[g{i}]crop={EYE_W}:{EYE_H}:{cx}:{cy}[h{i}];" for i, (cx, cy) in
+                      enumerate([(0, 0), (EYE_SCALE_W - EYE_W, 0), (0, EYE_SCALE_H - EYE_H), (EYE_SCALE_W - EYE_W, EYE_SCALE_H - EYE_H)]))
+            + "".join(f"[h{i}]" for i in range(4)) + "vstack=inputs=4,format=monob[big];"
+            # [rt]: the same, for the top-left third, where the rating box is
+            f"[g4]crop={RATING_W}:{RATING_H}:0:0,format=monob[rt]")
+
+
+def _split_frame(frame: bytes) -> Tuple[bytes, Tuple[bytes, ...]]:
+    """(the THUMB_W x THUMB_H rgb24 thumbnail, the grey corners) from one FFmpeg frame."""
+    row = OUT_W * 3
+    thumb = b"".join(frame[y * row:y * row + THUMB_W * 3] for y in range(THUMB_H))
+    corners = tuple(bytes(frame[(THUMB_H + k * CORNER_H + y) * row + x * 3] for y in range(CORNER_H) for x in range(CORNER_W))
+                    for k in range(len(CORNERS)))
+    return thumb, corners
+
+
+def eye_path(log_path) -> Path:
+    return Path(str(log_path) + ".eye")
+
+
+def eye_scores(path) -> Optional[List[float]]:
+    """From the pass's [big] file: per second, the share of the faint logo's pixels lit, in the
+    corner where it's clearest; None if no corner has one. Deletes the file."""
+    row = (EYE_W + 7) // 8
+    per_corner = row * EYE_H
+    per = per_corner * 4
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return None
+    finally:
+        Path(path).unlink(missing_ok=True)
+    n = len(data) // per
+    if n < 120:
+        return None
+
+    def bits(sec: int, k: int) -> bytes:
+        return data[sec * per + k * per_corner:sec * per + (k + 1) * per_corner]
+
+    best = None
+    for k in range(4):
+        # How often each pixel is lit, from every EYE_SAMPLE-th second
+        counts = [0] * (per_corner * 8)
+        samples = range(0, n, EYE_SAMPLE)
+        for sec in samples:
+            for j, byte in enumerate(bits(sec, k)):
+                if byte:
+                    for b in range(8):
+                        if byte & (0x80 >> b):
+                            counts[j * 8 + b] += 1
+        cut = EYE_PIXEL_SHARE * len(samples)
+        # Not the outer EYE_EDGE pixels: FFmpeg's blur makes the picture's own edge (often a thin line)
+        # look lighter than its surroundings in every second, ads included; no logo sits there
+        logo = [(i // 8, 0x80 >> (i % 8)) for i, cnt in enumerate(counts) if cnt > cut
+                and EYE_EDGE <= i % (row * 8) < EYE_W - EYE_EDGE and EYE_EDGE <= i // (row * 8) < EYE_H - EYE_EDGE]
+        if len(logo) >= EYE_MIN_PIXELS and (best is None or len(logo) > len(best[1])):
+            best = (k, logo)
+    if best is None:
+        return None
+    k, logo = best
+    return [sum(1 for j, mask in logo if bits(sec, k)[j] & mask) / len(logo) for sec in range(n)]
+
+
+def rating_path(log_path) -> Path:
+    return Path(str(log_path) + ".rating")
+
+
+_REVERSED = bytes(int(f"{b:08b}"[::-1], 2) for b in range(256))
+
+
+def rating_rows(frame: bytes) -> List[int]:
+    """One second of the pass's rating file (monob, RATING_W x RATING_H) as rows, bit x = pixel x;
+    the picture's own edge (EYE_EDGE) left out, as for the eye."""
+    row = (RATING_W + 7) // 8
+    keep = ((1 << (RATING_W - EYE_EDGE)) - 1) ^ ((1 << EYE_EDGE) - 1)
+    return [int.from_bytes(frame[y * row:(y + 1) * row].translate(_REVERSED), "little") & keep
+            if EYE_EDGE <= y < RATING_H - EYE_EDGE else 0 for y in range(RATING_H)]
+
+
+def _rating_pattern(seconds: List[List[int]]) -> Optional[Tuple[List[int], int, int]]:
+    """(rows, first row, last row) of what stays put longest in a compact patch in the opening."""
+    best = None
+    for s in range(0, min(RATING_OPENING, len(seconds) - RATING_STEADY + 1)):
+        rows = list(seconds[s])
+        for k in range(1, RATING_STEADY):
+            rows = [a & b for a, b in zip(rows, seconds[s + k])]
+        n = sum(_popcount(r) for r in rows)
+        if n < RATING_MIN_PIXELS or (best and n <= best[0]):
+            continue
+        ys = [y for y, r in enumerate(rows) if r]
+        x0 = min((r & -r).bit_length() - 1 for r in rows if r)
+        x1 = max(r.bit_length() - 1 for r in rows if r)
+        if x1 - x0 <= RATING_MAX_W and ys[-1] - ys[0] <= RATING_MAX_H:
+            best = (n, rows, ys[0], ys[-1])
+    return best[1:] if best else None
+
+
+def _rating_match(rows: List[int], pattern: Tuple[List[int], int, int]) -> float:
+    """The share of the pattern's pixels lit in this second (shifted a pixel either way at most)."""
+    want, top, bottom = pattern
+    total = sum(_popcount(r) for r in want)
+    best = 0
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            hit = 0
+            for y in range(top, bottom + 1):
+                if 0 <= y + dy < len(rows):
+                    r = rows[y + dy]
+                    hit += _popcount(want[y] & (r >> dx if dx >= 0 else r << -dx))
+            best = max(best, hit)
+    return best / total
+
+
+def show_rating(seconds: List[List[int]]) -> List[Tuple[int, int]]:
+    """[start, end) of each time the show's own rating shows, from each second's rows (rating_rows):
+    learned in the opening, then matched; nothing unless it's seen again after the opening."""
+    pattern = _rating_pattern(seconds)
+    if pattern is None:
+        return []  # the recording missed the show's start, or no rating: nothing to go by
+    shows: List[List[int]] = []
+    for sec, rows in enumerate(seconds):
+        if _rating_match(rows, pattern) >= RATING_MATCH:
+            if shows and sec - shows[-1][1] <= RATING_GAP:
+                shows[-1][1] = sec + 1
+                shows[-1][2] += 1
+            else:
+                shows.append([sec, sec + 1, 1])
+    shows = [s for s in shows if s[2] >= RATING_MIN_SECONDS]
+    if not any(s[0] >= RATING_OPENING for s in shows):
+        return []
+    return [(s[0], s[1]) for s in shows]
+
+
+def rating_boxes(path) -> List[Tuple[int, int]]:
+    """From the pass's rating file: when the show's own rating shows (show_rating). Deletes the file."""
+    per = (RATING_W + 7) // 8 * RATING_H
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return []
+    finally:
+        Path(path).unlink(missing_ok=True)
+    return show_rating([rating_rows(data[s * per:(s + 1) * per]) for s in range(len(data) // per)])
+
+
+
+def _not_over_rating(breaks: Optional[List[Dict[str, float]]], rating: List[Sequence[int]],
+                     blacks: List[float], edges: Sequence[float] = ()) -> Optional[List[Dict[str, float]]]:
+    """Whatever shows the show's own rating is the show: a break that runs into it ends at the last
+    black frame before it (the show came back there), one that starts while it shows starts after it,
+    and what's left shorter than a break isn't one. A break ending up to RATING_AFTER seconds before
+    the rating shows ends at the last black-and-silent moment (edges) before the rating instead."""
+    if not breaks or not rating:
+        return breaks
+    out = []
+    for b in breaks:
+        start, end = b["start"], b["end"]
+        for s, e in sorted(rating):
+            if s <= start < e:
+                start = float(e)
+            elif start < s < end:
+                back = [x for x in blacks if max(start, s - RATING_LOOKBACK) < x <= s]
+                end = max(back) if back else s - 2.0
+            elif end <= s <= end + RATING_AFTER:
+                later = [x for x in edges if end < x <= s]
+                end = max(later) if later else end
+        if end - start >= MIN_BREAK_SECONDS:
+            out.append({"start": round(start, 1), "end": round(end, 1)})
+    return out
+
+# ---- running the detector in Homeflix ---------------------------------------------------------
+# Files that are usually TV recordings (with ads); --ads all looks at every video
+RECORDING_EXT = {".ts", ".m2ts", ".mts", ".mpg", ".mpeg"}
+ADS_MODES = ("auto", "all", "off")
+
+
+def ads_pass(path: str, work: Path, stop: threading.Event, progress: Dict[str, float]):
+    """One ffmpeg pass over a local file (adapted from TabloView's _analyze): the per-second
+    thumbnails and corners from stdout, black frames, silences, the faint logo and the rating box
+    from the log and two side files. None if stopped."""
+    work.parent.mkdir(parents=True, exist_ok=True)
+    log_path = work.with_suffix(".log")
+    eye_p, rating_p = eye_path(log_path), rating_path(log_path)
+    cmd = [FFMPEG, "-hide_banner", "-nostats", "-nostdin", "-i", path, "-filter_complex", analysis_graph(),
+           "-map", "[bd]", "-f", "null", "-",
+           "-map", "[sd]", "-f", "null", "-",
+           "-map", "[lv]", "-f", "null", "-",
+           "-map", "[big]", "-f", "rawvideo", "-y", str(eye_p),
+           "-map", "[rt]", "-f", "rawvideo", "-y", str(rating_p),
+           "-map", "[o]", "-f", "rawvideo", "-"]
+    pre = [NICE, "-n", "15"] if NICE else []
+    size = OUT_W * OUT_H * 3
+    hists: List[List[float]] = []
+    corners: List[Tuple[bytes, ...]] = []
+    stopped = False
+    try:
+        with open(log_path, "w", encoding="utf-8") as lf:
+            proc = subprocess.Popen(pre + cmd, stdout=subprocess.PIPE, stderr=lf, stdin=subprocess.DEVNULL,
+                                    **(LOW_PRIO or SUBPROC))
+
+            def watch():
+                while proc.poll() is None:
+                    if stop.wait(1):
+                        proc.kill()
+                        return
+            threading.Thread(target=watch, daemon=True).start()
+            try:
+                while True:
+                    frame = proc.stdout.read(size)
+                    if len(frame) < size:
+                        break
+                    thumb, corner = _split_frame(frame)
+                    hists.append(histogram(thumb))
+                    corners.append(corner)
+                    progress["done"] = len(hists)
+            finally:
+                stopped = stop.is_set()
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait()
+        if stopped:
+            return None
+        if proc.returncode != 0 and len(hists) < 60:
+            raise RuntimeError(f"ffmpeg exited with code {proc.returncode}")
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+        eye = eye_scores(eye_p)  # these two read and delete their files
+        rating = rating_boxes(rating_p)
+        return {"hists": hists, "corners": corners, "blacks": black_frames(text), "quiet": silences(text),
+                "eye": eye, "rating": rating}
+    finally:
+        for p in (log_path, eye_p, rating_p):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+
+class AdFinder:
+    """Finds the ad breaks in recordings in the background, one at a time, at low priority, and
+    waits while anything is being converted for playback. Results are cached per file (redone when
+    the file or the detector changes); breaks marked "not an ad" are kept in the data folder."""
+
+    def __init__(self, lib: "Library", mode: str = "auto"):
+        self.lib = lib
+        self.mode = mode if mode in ADS_MODES else "auto"
+        self.dir = XDG_CACHE / "ads"
+        self.not_ads_path = XDG_DATA / "not_ads.json"
+        self.not_ads = load_json(self.not_ads_path, {})
+        self.lock = threading.Lock()
+        self.asked: List[str] = []
+        self.current: Optional[Dict[str, object]] = None
+        self.wake = threading.Event()
+        self.busy = lambda: False  # set by main(): True while a video is being converted
+
+    # -- results ---------------------------------------------------------------
+    def _path(self, iid: str) -> Path:
+        return self.dir / f"{iid}.json"
+
+    def result(self, it) -> Optional[dict]:
+        r = load_json(self._path(it["id"]), None)
+        if r and r.get("key") == it["_key"] and r.get("method") == METHOD:
+            return r
+        return None
+
+    def _save(self, it, status: str, breaks=None, by=None, error=None):
+        atomic_write(self._path(it["id"]), json.dumps(
+            {"key": it["_key"], "method": METHOD, "status": status, "breaks": breaks or [], "by": by,
+             "error": error, "at": int(time.time())}))
+
+    def breaks(self, it) -> List[Dict[str, float]]:
+        r = self.result(it)
+        if not r or r.get("status") != "done":
+            return []
+        with self.lock:
+            skip = self.not_ads.get(it["id"], [])
+        return [b for b in r["breaks"] if not any(s < b["end"] and b["start"] < e for s, e in skip)]
+
+    def not_a_break(self, it, start: float, end: float):
+        with self.lock:
+            self.not_ads.setdefault(it["id"], []).append([round(float(start), 1), round(float(end), 1)])
+            atomic_write(self.not_ads_path, json.dumps(self.not_ads))
+
+    # -- what to look at ---------------------------------------------------------
+    def _can(self, it) -> bool:
+        return (it["kind"] == "video" and it.get("_probed") and bool(it.get("_a"))
+                and (it.get("duration") or 0) >= 300)
+
+    def _wanted(self, it) -> bool:
+        if self.mode == "off" or not self._can(it):
+            return False
+        return self.mode == "all" or it["_ext"] in RECORDING_EXT
+
+    def pending(self) -> list:
+        with self.lib.lock:
+            items = list(self.lib.items.values())
+        with self.lock:
+            asked = list(self.asked)
+        by_id = {it["id"]: it for it in items}
+        first = [by_id[i] for i in asked if i in by_id and self._can(by_id[i])]
+        rest = sorted((it for it in items if it["id"] not in asked and self._wanted(it)), key=lambda x: -x["added"])
+        return [it for it in first + rest if it["id"] in asked or not self.result(it)]
+
+    def ask(self, it) -> bool:
+        if not FFMPEG or not self._can(it):
+            return False
+        with self.lock:
+            if it["id"] not in self.asked:
+                self.asked.append(it["id"])
+        try:
+            self._path(it["id"]).unlink()
+        except OSError:
+            pass
+        self.wake.set()
+        return True
+
+    def info(self, it) -> dict:
+        cur = self.current
+        if cur and cur["id"] == it["id"]:
+            total = it.get("duration") or 0
+            pct = min(99, round(float(cur["done"]) / total * 100)) if total else None
+            return {"status": "running", "percent": pct, "breaks": []}
+        r = self.result(it)
+        if r:
+            return {"status": r["status"], "by": r.get("by"), "breaks": self.breaks(it)}
+        with self.lock:
+            queued = it["id"] in self.asked
+        if queued or (FFMPEG and self._wanted(it)):
+            return {"status": "queued", "breaks": []}
+        return {"status": "none" if FFMPEG and self._can(it) else "unavailable", "breaks": []}
+
+    # -- the worker ------------------------------------------------------------
+    def run(self):
+        if not FFMPEG:
+            return
+        while True:
+            self.wake.wait(30)
+            self.wake.clear()
+            try:
+                if self.busy():
+                    continue
+                todo = self.pending()
+                if todo:
+                    self.analyze(todo[0])
+                    if self.pending():
+                        self.wake.set()  # straight on to the next
+            except Exception as e:
+                log(f"[Ads] {e}")
+
+    def analyze(self, it):
+        stop = threading.Event()
+        self.current = {"id": it["id"], "done": 0}
+        name = it.get("show") and f"{it['show']} S{it.get('season')}E{it.get('episode')}" or it.get("title") or it["file"]
+
+        def pause_while_busy():
+            while not stop.is_set():
+                if self.busy():
+                    stop.set()
+                time.sleep(2)
+        threading.Thread(target=pause_while_busy, daemon=True).start()
+        t0 = time.time()
+        try:
+            feats = ads_pass(it["_path"], self.dir / f"work_{it['id']}", stop, self.current)
+            if feats is None:
+                return  # something started playing; tried again later
+            how: Dict[str, str] = {}
+            found = find_breaks(feats["hists"], feats["blacks"], feats["corners"], feats["quiet"], None, how,
+                                feats["eye"], feats["rating"])
+            self._save(it, "unreliable" if found is None else "done", found, how.get("by"))
+            log(f"[Ads] {name}: " + ("show and ads could not be told apart, nothing marked" if found is None
+                                     else f"{len(found)} break(s), found by {how.get('by')}")
+                + f" ({time.time() - t0:.0f}s)")
+        except Exception as e:
+            self._save(it, "failed", error=str(e)[:300])
+            log(f"[Ads] couldn't look for ads in {name}: {e}")
+        finally:
+            stop.set()
+            self.current = None
+            with self.lock:
+                if it["id"] in self.asked and self.result(it):
+                    self.asked.remove(it["id"])
+
+
+# ----------------------------------------------------------------------------
 # HTTP
 # ----------------------------------------------------------------------------
 class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
@@ -738,6 +1690,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     secret = b""
     quiet = False
     quality = "high"
+    ads: "AdFinder" = None
+    converting = 0  # videos being converted right now: ad finding waits for them
+    conv_lock = threading.Lock()
 
     def log_message(self, fmt, *args):
         if not self.quiet:
@@ -818,6 +1773,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json({"profiles": self.state.profiles(), "auth": bool(self.password)})
         if path == "/api/state":
             return self.send_json(self.state.get((qs.get("profile") or [""])[0]))
+        m = re.fullmatch(r"/api/ads/([0-9a-f]{14})", path)
+        if m:
+            it = self.lib.get(m.group(1))
+            if not it:
+                return self.err(404, "unknown item")
+            return self.send_json(self.ads.info(it))
         m = re.fullmatch(r"/(media|transcode|thumb|subs)/([0-9a-f]{14})(?:/(\d+))?", path)
         if not m:
             return self.err(404, "not found")
@@ -882,6 +1843,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/rescan":
             threading.Thread(target=self.lib.scan, daemon=True).start()
             return self.send_json({"ok": True})
+        m = re.fullmatch(r"/api/ads/([0-9a-f]{14})/(find|not_ad)", path)
+        if m:
+            it = self.lib.get(m.group(1))
+            if not it:
+                return self.err(404, "unknown item")
+            if m.group(2) == "find":
+                return self.send_json({"ok": self.ads.ask(it)})
+            self.ads.not_a_break(it, float(b["start"]), float(b["end"]))
+            return self.send_json({"ok": True, "breaks": self.ads.breaks(it)})
         return self.err(404, "not found")
 
     # -- streaming -------------------------------------------------------------
@@ -954,7 +1924,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 else:  # libopenh264 has no CRF mode; its default bitrate is very low
                     cmd += ["-c:v", VENC, "-b:v", f"{mbit // 2}M", "-maxrate", f"{mbit}M"] + scale
             if a.get("codec") == "aac":
-                cmd += ["-c:a", "copy"]
+                # AAC from .ts recordings comes in ADTS packets, which MP4 can't hold as they are
+                cmd += ["-c:a", "copy", "-bsf:a", "aac_adtstoasc"]
             else:
                 cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
             ctype = "video/mp4"
@@ -967,6 +1938,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
                                 **SUBPROC)
         self.close_connection = True
+        counted = it["kind"] == "video"
+        if counted:
+            with Handler.conv_lock:
+                Handler.converting += 1
         try:
             self.send_response(200)
             self.send_header("Content-Type", ctype)
@@ -981,6 +1956,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         finally:
             proc.kill()
             proc.wait()
+            if counted:
+                with Handler.conv_lock:
+                    Handler.converting -= 1
 
 
 def guess_type(it):
@@ -1163,7 +2141,15 @@ body.mplay .scanning{bottom:96px}
 .pbot{bottom:0;padding:10px 24px 18px;background:linear-gradient(#0000,#000c)}
 .seekrow{display:flex;align-items:center;gap:14px;font-size:14px}
 input[type=range]{accent-color:var(--red);cursor:pointer}
-#pseek{flex:1}
+#pseek{flex:1;width:100%}
+.seekwrap{flex:1;position:relative;display:flex;align-items:center}
+#padbar{position:absolute;left:0;right:0;top:calc(50% + 4px);height:4px;pointer-events:none}
+#padbar i{position:absolute;top:0;bottom:0;background:#f5c518;border-radius:2px;opacity:.9}
+#pskip{position:absolute;right:28px;bottom:120px;z-index:4;display:flex;gap:10px;align-items:center}
+#pskip button{background:#000b;color:#fff;border:1px solid #fffa;border-radius:4px;padding:10px 18px;font-size:16px;font-weight:700;cursor:pointer}
+#pskip button:hover{background:#fff;color:#000}
+#pskip #pnotad{font-weight:400;font-size:14px;padding:8px 12px;border-color:#fff5;color:#ddd}
+.pctl #pads{font-size:13px;min-width:0;color:#ddd;border:1px solid #fff5;border-radius:4px;padding:4px 8px}
 .pctl{display:flex;align-items:center;gap:18px;margin-top:8px}
 .pctl button{background:none;border:0;font-size:24px;min-width:32px}
 .pctl .sp{flex:1}
@@ -1235,8 +2221,9 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
   <div class="spinner hidden" id="pspin"></div>
   <div id="pmsg" class="hidden"></div>
   <div class="pov ptop"><button id="pback" title="Back (Esc)">&#8592;</button><div id="ptitle"></div></div>
+  <div id="pskip" class="hidden"><button id="pnotad" title="Never skip this part">Not an ad</button><button id="pskipbtn"></button></div>
   <div class="pov pbot">
-    <div class="seekrow"><input type="range" id="pseek" min="0" max="1000" value="0" step="1"><span id="ptime">0:00</span></div>
+    <div class="seekrow"><div class="seekwrap"><input type="range" id="pseek" min="0" max="1000" value="0" step="1"><div id="padbar"></div></div><span id="ptime">0:00</span></div>
     <div class="pctl">
       <button id="pplay" title="Play/Pause (Space)">&#10074;&#10074;</button>
       <button id="prew" title="Back 10s (&larr;)">&#8634;</button>
@@ -1245,6 +2232,7 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
       <input type="range" id="pvol" min="0" max="1" step="0.05" value="1" style="width:90px">
       <span class="sp"></span>
       <span id="pmode" class="small"></span>
+      <button id="pads" class="hidden" title="Ad breaks"></button>
       <select id="psubs" title="Subtitles"></select>
       <button id="pnext" title="Next episode (N)" class="hidden">&#9197;</button>
       <button id="pfs" title="Full screen (F)">&#9974;</button>
@@ -1425,6 +2413,7 @@ function playVideo(it,start){stopMusic(true);closeModal();P.it=it;P.dur=it.durat
   $('#pnext').classList.toggle('hidden',!nextEp(it));
   $('#player').classList.remove('hidden');document.body.classList.add('noscroll');
   if(document.fullscreenEnabled&&!document.fullscreenElement&&matchMedia('(pointer:coarse)').matches)$('#player').requestFullscreen().catch(()=>{});
+  P.ads=[];P.adsState=null;P.allow=new Set();P.undo=null;P.adJump=null;clearTimeout(P.adsT);adsUI();loadAds(it.id);
   loadVid(start);poke()}
 function nextEp(it){if(!it.show)return null;const s=S.showByKey['show:'+it.show];return s.eps[s.eps.indexOf(it)+1]||null}
 function loadVid(t){spin(true);[...vid.querySelectorAll('track')].forEach(x=>x.remove());
@@ -1440,7 +2429,7 @@ function spin(on){$('#pspin').classList.toggle('hidden',!on)}
 function msg(t,ms=2500){const m=$('#pmsg');m.textContent=t;m.classList.remove('hidden');clearTimeout(m._t);m._t=setTimeout(()=>m.classList.add('hidden'),ms)}
 // HEVC passthrough failed (an error, or audio with no picture): convert it after all
 function hevcFail(){const t=cur();P.hevc=false;msg('Converting this file for your browser…');loadVid(t)}
-vid.addEventListener('loadedmetadata',()=>{if(P.mode==='tx'&&P.hevc&&!vid.videoWidth)return hevcFail();if(P.mode==='direct'){if(isFinite(vid.duration))P.dur=vid.duration;if(P.pending){vid.currentTime=P.pending;P.pending=0}}});
+vid.addEventListener('loadedmetadata',()=>{if(P.mode==='tx'&&P.hevc&&!vid.videoWidth)return hevcFail();if(P.mode==='direct'){if(isFinite(vid.duration))P.dur=vid.duration;if(P.pending){vid.currentTime=P.pending;P.pending=0}}adsUI()});
 vid.addEventListener('waiting',()=>spin(true));vid.addEventListener('playing',()=>{if(P.mode==='tx'&&P.hevc&&!vid.videoWidth)return hevcFail();spin(false);$('#pplay').innerHTML='&#10074;&#10074;'});
 vid.addEventListener('canplay',()=>spin(false));
 vid.addEventListener('pause',()=>{$('#pplay').innerHTML='&#9654;';saveProg(true)});
@@ -1448,11 +2437,11 @@ vid.addEventListener('error',()=>{if(!P.it||!vid.getAttribute('src'))return;spin
   if(P.mode==='direct'&&S.transcode){const t=cur();P.mode='tx';msg('Converting this file for your browser…');loadVid(t)}
   else if(P.mode==='tx'&&P.hevc)hevcFail()
   else msg(S.transcode?'Sorry, this file could not be played.':'Your browser cannot play this format and ffmpeg is not installed on the server.',6000)});
-vid.addEventListener('timeupdate',()=>{const t=cur();if(!P.drag&&P.dur)$('#pseek').value=t/P.dur*1000;$('#ptime').textContent=fmtT(t)+' / '+fmtT(P.dur);if(Date.now()-P.lastSave>10000)saveProg()});
+vid.addEventListener('timeupdate',()=>{const t=cur();adTick(t);if(!P.drag&&P.dur)$('#pseek').value=t/P.dur*1000;$('#ptime').textContent=fmtT(t)+' / '+fmtT(P.dur);if(Date.now()-P.lastSave>10000)saveProg()});
 vid.addEventListener('ended',async()=>{if(P.mode==='tx'&&P.dur&&cur()<P.dur-30){return}await saveProg(true,true);const n=nextEp(P.it);if(n){msg('Next episode…');playVideo(n,0)}else closePlayer()});
 async function saveProg(force,done){if(!P.it)return;P.lastSave=Date.now();const t=cur();if(!force&&t<5)return;const body={profile:S.profile.id,id:P.it.id,pos:t,dur:P.dur};if(done)body.done=true;
   S.progress[P.it.id]={pos:t,dur:P.dur,done:done||(P.dur&&t>=P.dur*.93),updated:Date.now()/1000};try{await post('/api/progress',body)}catch(e){}}
-function closePlayer(){if(!P.it)return;saveProg(true);P.it=null;vid.pause();vid.removeAttribute('src');vid.load();
+function closePlayer(){if(!P.it)return;saveProg(true);P.it=null;clearTimeout(P.adsT);$('#pskip').classList.add('hidden');vid.pause();vid.removeAttribute('src');vid.load();
   if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});$('#player').classList.add('hidden');document.body.classList.remove('noscroll');render()}
 const togglePlay=()=>vid.paused?vid.play():vid.pause();
 $('#pplay').onclick=togglePlay;vid.onclick=togglePlay;vid.ondblclick=()=>toggleFs();
@@ -1468,6 +2457,32 @@ $('#pfs').onclick=toggleFs;
 function poke(){const p=$('#player');p.classList.remove('idle');clearTimeout(P.idleT);P.idleT=setTimeout(()=>{if(!vid.paused)p.classList.add('idle')},3000)}
 $('#player').addEventListener('mousemove',poke);$('#player').addEventListener('touchstart',poke,{passive:true});
 if(localStorage.hf_vol){vid.volume=+localStorage.hf_vol;$('#pvol').value=vid.volume}
+
+/* ---------- ad breaks ---------- */
+const autoSkip=()=>localStorage.hf_adskip==='1';
+async function loadAds(id){try{const r=await api('/api/ads/'+id);if(!P.it||P.it.id!==id)return;P.ads=r.breaks||[];P.adsState=r.status;adsUI();
+  clearTimeout(P.adsT);if(r.status==='running'||r.status==='queued')P.adsT=setTimeout(()=>loadAds(id),20000)}catch(e){}}
+function adsUI(){const d=P.dur;$('#padbar').replaceChildren(...(d?P.ads.map(b=>{const i=h('i');i.style.left=b.start/d*100+'%';i.style.width=(b.end-b.start)/d*100+'%';return i}):[]));
+  const st=P.adsState,t=P.ads.length?(autoSkip()?'Ads: auto-skip':'Ads: ask'):st==='running'?'Finding ads…':st==='queued'?'Ads: waiting':st==='none'?'Find ads':'';
+  $('#pads').textContent=t;$('#pads').classList.toggle('hidden',!t)}
+$('#pads').onclick=async()=>{if(!P.it)return;
+  if(P.ads.length){localStorage.hf_adskip=autoSkip()?'0':'1';adsUI();msg(autoSkip()?'Ad breaks will be skipped automatically':'A Skip Ad button will show during ad breaks')}
+  else if(P.adsState==='none'){try{await post('/api/ads/'+P.it.id+'/find',{})}catch(e){}P.adsState='queued';adsUI();msg('Looking for ad breaks in the background. They show up on the timeline when found.',4000);loadAds(P.it.id)}};
+// Called on every time update: auto-skip, or show the Skip Ad / Undo buttons
+function adTick(t){const box=$('#pskip');if(!P.ads.length){box.classList.add('hidden');return}
+  const b=P.ads.find(x=>t>=x.start-.3&&t<x.end-1&&!P.allow.has(x));
+  const jumping=b&&P.adJump&&P.adJump.b===b&&Date.now()-P.adJump.at<5000;
+  if(b&&autoSkip()&&!jumping){P.adJump={b,at:Date.now()};P.undo={b,until:Date.now()+8000};seekTo(b.end);msg(`Skipped an ad break (${fmtT(b.end-b.start)})`,3000)}
+  const undo=P.undo&&Date.now()<P.undo.until?P.undo.b:null;
+  const mode=b&&!autoSkip()?'skip':undo?'undo':null;P.box={mode,b:mode==='skip'?b:undo};
+  box.classList.toggle('hidden',!mode);if(mode)$('#pskipbtn').textContent=mode==='skip'?'Skip Ad ▸▸':'Undo'}
+$('#pskipbtn').onclick=()=>{const x=P.box||{};if(!x.b)return;
+  if(x.mode==='skip'){P.adJump={b:x.b,at:Date.now()};seekTo(x.b.end)}else{P.allow.add(x.b);P.undo=null;seekTo(x.b.start)}
+  $('#pskip').classList.add('hidden')};
+$('#pnotad').onclick=async()=>{const x=P.box||{};if(!x.b||!P.it)return;const b=x.b;P.undo=null;$('#pskip').classList.add('hidden');
+  P.ads=P.ads.filter(y=>y!==b);adsUI();if(x.mode==='undo')seekTo(b.start);
+  try{const r=await post('/api/ads/'+P.it.id+'/not_ad',{start:b.start,end:b.end});if(r&&r.breaks)P.ads=r.breaks;adsUI()}catch(e){}
+  msg("Got it. That part won't be skipped again.")};
 
 /* ---------- music player ---------- */
 const aud=$('#aud'),M={q:[],i:0,mode:'direct',off:0,shuf:false,rep:false,orig:[]};
@@ -1505,7 +2520,7 @@ if('mediaSession'in navigator){const ms=navigator.mediaSession;ms.setActionHandl
 document.addEventListener('keydown',e=>{if(e.target.matches('input[type=search],input[type=text]'))return;
   if(P.it){const k=e.key;if(k===' '||k==='k'){e.preventDefault();togglePlay()}else if(k==='ArrowLeft'){seekTo(cur()-10)}else if(k==='ArrowRight'){seekTo(cur()+10)}
     else if(k==='ArrowUp'){e.preventDefault();vid.volume=Math.min(1,vid.volume+.1)}else if(k==='ArrowDown'){e.preventDefault();vid.volume=Math.max(0,vid.volume-.1)}
-    else if(k==='f')toggleFs();else if(k==='m')$('#pmute').click();else if(k==='n')$('#pnext').click();else if(k==='Escape'&&!document.fullscreenElement)closePlayer();poke();return}
+    else if(k==='f')toggleFs();else if(k==='m')$('#pmute').click();else if(k==='n')$('#pnext').click();else if(k==='s'&&!$('#pskip').classList.contains('hidden'))$('#pskipbtn').click();else if(k==='Escape'&&!document.fullscreenElement)closePlayer();poke();return}
   if(e.key==='Escape'&&!$('#modal').classList.contains('hidden'))closeModal();
   else if(e.key===' '&&!$('#mbar').classList.contains('hidden')&&e.target===document.body){e.preventDefault();$('#mplay').click()}
   else if(e.key==='/'){e.preventDefault();$('#search').focus()}});
@@ -1574,6 +2589,9 @@ def main():
                     help="quality for files that must be converted: balanced (lighter on CPU and Wi-Fi), "
                          "high (default) or max (or set HOMEFLIX_QUALITY)")
     ap.add_argument("--no-thumbs", action="store_true", help="don't generate thumbnails")
+    ap.add_argument("--ads", choices=ADS_MODES, default=os.environ.get("HOMEFLIX_ADS", "auto"),
+                    help="find ad breaks in the background: auto (TV recordings: .ts, .m2ts, .mpg; default), "
+                         "all (every video), off (only when asked from the player) (or set HOMEFLIX_ADS)")
     ap.add_argument("--quiet", action="store_true", help="don't log every HTTP request")
     ap.add_argument("--version", action="version", version=f"Homeflix {VERSION}")
     a = ap.parse_args()
@@ -1600,6 +2618,8 @@ def main():
     Handler.secret = secret_file.read_bytes()
     Handler.quiet = a.quiet
     Handler.quality = a.quality
+    Handler.ads = AdFinder(lib, a.ads)
+    Handler.ads.busy = lambda: Handler.converting > 0
 
     log(f"Homeflix {VERSION} starting (Python {sys.version.split()[0]}, {sys.platform})")
     if not FFMPEG:
@@ -1617,6 +2637,7 @@ def main():
             lib.scan()
     if a.rescan_minutes > 0:
         threading.Thread(target=rescan_loop, daemon=True).start()
+    threading.Thread(target=Handler.ads.run, daemon=True).start()
 
     try:
         httpd = Server((a.host, a.port), Handler)
@@ -1625,6 +2646,7 @@ def main():
     log(f"Homeflix {VERSION} serving {', '.join(str(r) for r in lib.roots)}")
     if FFMPEG and VENC:
         log(f"  Conversion quality: {a.quality} (change with --quality or HOMEFLIX_QUALITY)")
+        log(f"  Ad break finder: {a.ads} (change with --ads or HOMEFLIX_ADS)")
     log(f"  This PC:      http://localhost:{a.port}")
     if a.host in ("0.0.0.0", "::", ""):
         for ip in lan_ips():
