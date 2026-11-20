@@ -24,7 +24,7 @@ No Docker. No database. No account. No `pip install`. Just `python3 homeflix.py`
 
 You already own the movies, the shows and the albums. They're sitting in a folder named `Downloads` with filenames like `The.Show.S02E07.1080p.WEB.x265-GRP.mkv`.
 
-**Homeflix turns that folder into a polished streaming app.** Open it on any phone, laptop or smart TV browser in your house. You get poster rows, a "Who's watching?" screen, Continue Watching, binge-ready TV seasons, **commercial skipping for your TV recordings**, and a music player that works from your phone's lock screen.
+**Homeflix turns that folder into a polished streaming app.** Open it on any phone, laptop or smart TV browser in your house. You get poster rows, a "Who's watching?" screen, Continue Watching, binge-ready TV seasons, optional **commercial skipping for your TV recordings**, and a music player that works from your phone's lock screen.
 
 It's one file and uses nothing outside the Python standard library. You can read all of it in an afternoon, and it runs on whatever machine already has your media on it.
 
@@ -43,7 +43,7 @@ It's one file and uses nothing outside the Python standard library. You can read
 | **Dependencies** | Python standard library (ffmpeg optional) | Dozens of packages and services |
 | **Phones home?** | Never. No telemetry, no cloud login | Often requires an online account |
 | **Runs on** | Linux, macOS, Windows | Varies |
-| **Skips ads in TV recordings** | Yes, found on your own PC | Often a paid add-on or a separate tool (Comskip) |
+| **Skips ads in TV recordings** | Yes (optional), found on your own PC | Often a paid add-on or a separate tool (Comskip) |
 | **Client apps** | Any web browser | Often platform-specific apps |
 | **Auditable** | ~2,600 lines you can actually read | Hundreds of thousands |
 
@@ -78,19 +78,26 @@ It's one file and uses nothing outside the Python standard library. You can read
 - Cover art is taken from embedded artwork or `cover.jpg` / `folder.jpg`.
 - A **persistent player bar** with shuffle and repeat that keeps playing while you browse.
 - **Lock-screen and media-key controls** on phones.
+- A **Now Playing** screen with big, easy-to-hit buttons for phones: tap the music bar to open it. **Previous / Next** sit up top, then a progress bar you can tap or drag anywhere, then **back 15 s · play · forward 15 s** (double-tap to skip 30 s). It keeps the screen on while it's open, and works sideways in a car mount.
 
 <p align="center"><img src="docs/screenshots/music.png" alt="Album view with the track list, the current track highlighted, and the music player bar at the bottom" width="100%"></p>
 
-### Skips the commercials in TV recordings
-- Recorded TV (`.ts`, `.m2ts`, `.mpg` from a DVR, Tablo, HDHomeRun or a capture card) is checked for ad breaks **in the background, on your own PC**. Nothing is sent anywhere.
-- Breaks show as **yellow marks on the timeline**. Press **Skip Ad** (or `S`) when one comes up, or switch the player to **auto-skip** with an **Undo** button.
+### Skips the commercials in TV recordings (optional)
+- **Off until you turn it on**, so a library of movies never sees an ad button. Turn it on by adding this line to your settings file (see [Where things live](#-where-things-live)) and restarting Homeflix:
+  ```
+  HOMEFLIX_ADS=auto
+  ```
+  or start it with `homeflix --ads auto`.
+- Once on, recorded TV (`.ts`, `.m2ts`, `.mpg` from a DVR, Tablo, HDHomeRun or a capture card) is checked for ad breaks **in the background, on your own PC**. Nothing is sent anywhere. Use `--ads all` to check every video instead.
+- The player only shows ad controls on videos where breaks were found. Everything else looks exactly as before.
+- Breaks show as **yellow marks on the timeline**. Press **Skip Ad** (or `S`) when one comes up, or tap **Ads: ask** at the top right to switch to **auto-skip**, with an **Undo** button.
 - Got one wrong? Press **Not an ad** and that part is never skipped again.
 - Works like the network does: most channels take their corner logo off for the ads, so a minute or more without it is a break, snapped to the black, silent moment where the show stops and starts. Channels without a logo fall back to how the picture looks. It's tuned to **skip too little rather than too much**, and if the show and ads can't be told apart it marks nothing.
 - On 13 test recordings from US networks it skipped **80–100% of ad time** (most 97% or more) while skipping 0–67 seconds of the show.
-- Any other video can be checked from the player (**Find ads**), or every video with `--ads all`. The detector is from [TabloView](https://github.com/JoeDV/TabloView) by JoeDV.
+- The detector is from [TabloView](https://github.com/JoeDV/TabloView) by JoeDV.
 
 <p align="center">
-  <img src="docs/screenshots/ad-skip.jpg" alt="Homeflix player during an ad break: yellow ad-break marks under the seek bar, Skip Ad and Not an ad buttons in the corner, and an Ads: ask toggle in the controls" width="100%">
+  <img src="docs/screenshots/ad-skip.jpg" alt="Homeflix player during an ad break: yellow ad-break marks under the seek bar, Skip Ad and Not an ad buttons in the corner, and an Ads: ask toggle at the top right" width="100%">
   <br><sub>An ad break: the yellow marks under the seek bar show where every break is, and <b>Skip Ad</b> jumps to the end of this one.</sub>
 </p>
 
@@ -178,7 +185,7 @@ python homeflix.py --videos "D:\Movies" --music "%USERPROFILE%\Music"   # Window
 | `--quality LEVEL` | Quality for files that must be converted: `balanced`, `high` (default) or `max` |
 | `--rescan-minutes N` | Auto-rescan interval (default 15, `0` disables) |
 | `--no-thumbs` | Skip thumbnail generation |
-| `--ads MODE` | Find ad breaks in the background: `auto` (TV recordings: `.ts`, `.m2ts`, `.mpg`; default), `all` (every video) or `off` (only when you press **Find ads** in the player) |
+| `--ads MODE` | Commercial skipping: `off` (default), `auto` (finds ad breaks in TV recordings: `.ts`, `.m2ts`, `.mpg`) or `all` (every video). Or set `HOMEFLIX_ADS` in the settings file. |
 | `--quiet` | Don't log every HTTP request |
 | `--version` | Print the version and exit. The version is also shown at startup and next to the logo in the web app. |
 
