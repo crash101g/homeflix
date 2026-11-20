@@ -52,7 +52,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.3.0"
+VERSION = "1.3.4"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -1460,9 +1460,10 @@ def _not_over_rating(breaks: Optional[List[Dict[str, float]]], rating: List[Sequ
     return out
 
 # ---- running the detector in Homeflix ---------------------------------------------------------
-# Files that are usually TV recordings (with ads); --ads all looks at every video
+# Commercial skipping is off unless turned on. auto: files that are usually TV recordings (with
+# ads); all: every video
 RECORDING_EXT = {".ts", ".m2ts", ".mts", ".mpg", ".mpeg"}
-ADS_MODES = ("auto", "all", "off")
+ADS_MODES = ("off", "auto", "all")
 
 
 def ads_pass(path: str, work: Path, stop: threading.Event, progress: Dict[str, float]):
@@ -1531,9 +1532,9 @@ class AdFinder:
     waits while anything is being converted for playback. Results are cached per file (redone when
     the file or the detector changes); breaks marked "not an ad" are kept in the data folder."""
 
-    def __init__(self, lib: "Library", mode: str = "auto"):
+    def __init__(self, lib: "Library", mode: str = "off"):
         self.lib = lib
-        self.mode = mode if mode in ADS_MODES else "auto"
+        self.mode = mode if mode in ADS_MODES else "off"
         self.dir = XDG_CACHE / "ads"
         self.not_ads_path = XDG_DATA / "not_ads.json"
         self.not_ads = load_json(self.not_ads_path, {})
@@ -1592,7 +1593,7 @@ class AdFinder:
         return [it for it in first + rest if it["id"] in asked or not self.result(it)]
 
     def ask(self, it) -> bool:
-        if not FFMPEG or not self._can(it):
+        if self.mode == "off" or not FFMPEG or not self._can(it):
             return False
         with self.lock:
             if it["id"] not in self.asked:
@@ -1605,6 +1606,8 @@ class AdFinder:
         return True
 
     def info(self, it) -> dict:
+        if self.mode == "off":
+            return {"status": "off", "breaks": []}  # the player shows nothing about ads
         cur = self.current
         if cur and cur["id"] == it["id"]:
             total = it.get("duration") or 0
@@ -1621,7 +1624,7 @@ class AdFinder:
 
     # -- the worker ------------------------------------------------------------
     def run(self):
-        if not FFMPEG:
+        if not FFMPEG or self.mode == "off":
             return
         while True:
             self.wake.wait(30)
@@ -2149,7 +2152,10 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
 #pskip button{background:#000b;color:#fff;border:1px solid #fffa;border-radius:4px;padding:10px 18px;font-size:16px;font-weight:700;cursor:pointer}
 #pskip button:hover{background:#fff;color:#000}
 #pskip #pnotad{font-weight:400;font-size:14px;padding:8px 12px;border-color:#fff5;color:#ddd}
-.pctl #pads{font-size:13px;min-width:0;color:#ddd;border:1px solid #fff5;border-radius:4px;padding:4px 8px}
+.ptop #pads{margin-left:auto;font-size:14px;color:#ddd;border:1px solid #fff5;border-radius:4px;padding:6px 10px;white-space:nowrap}
+/* phones: volume is set with the phone's own buttons (iPhones ignore the slider), and the space keeps
+   the full-screen button on screen */
+@media (pointer:coarse){#pvol{display:none}}
 .pctl{display:flex;align-items:center;gap:18px;margin-top:8px}
 .pctl button{background:none;border:0;font-size:24px;min-width:32px}
 .pctl .sp{flex:1}
@@ -2174,6 +2180,61 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
 .mright{display:flex;justify-content:flex-end;gap:10px;align-items:center}
 .mright input{width:100px}
 .mright button{background:none;border:0;font-size:18px}
+#mexpand{font-size:0!important}#mexpand svg{width:22px;height:22px;fill:currentColor;vertical-align:middle}
+/* Now Playing: big controls, made for phones (and the car) */
+#mfull{position:fixed;inset:0;z-index:70;background:linear-gradient(#2b2b2b,#090909 70%);display:flex;flex-direction:column;align-items:center;gap:12px;
+  padding:max(10px,env(safe-area-inset-top)) 20px max(18px,env(safe-area-inset-bottom));touch-action:manipulation;-webkit-user-select:none;user-select:none;overflow:hidden}
+#mfull button{background:none;border:0;color:#fff;display:grid;place-items:center;min-width:56px;min-height:56px;border-radius:50%;cursor:pointer;padding:0;-webkit-tap-highlight-color:transparent}
+#mfull button:active{background:#ffffff26}
+#mfull button.on{color:#46d369}
+#mfull svg{width:30px;height:30px;fill:currentColor}
+.mfhead{grid-area:head;width:100%;max-width:640px;display:flex;align-items:center;justify-content:space-between;color:#bbb;font-size:15px;font-weight:600}
+.mfart{grid-area:art;flex:1 1 auto;min-height:0;width:100%;max-width:min(80vw,34vh,460px);display:flex;align-items:center;justify-content:center}
+.mfart .art{width:100%;aspect-ratio:1;max-height:100%;border-radius:8px;box-shadow:0 10px 30px #000a}
+.mfart .art .ph{font-size:22px}
+.mfinfo{grid-area:info;width:100%;max-width:640px;text-align:center;min-width:0}
+#mftitle{font-size:26px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#mfsub{font-size:17px;color:#bbb;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.mfseek{grid-area:seek;width:100%;max-width:640px;height:56px;display:flex;align-items:center;cursor:pointer;touch-action:none}
+.mfseek .mftrack{position:relative;width:100%;height:10px;background:#ffffff38;border-radius:5px}
+.mfseek .fill{position:absolute;left:0;top:0;bottom:0;background:#fff;border-radius:5px}
+.mfseek .knob{position:absolute;top:50%;width:28px;height:28px;margin:-14px 0 0 -14px;background:#fff;border-radius:50%;box-shadow:0 2px 8px #000a;transition:width .1s,height .1s,margin .1s}
+.mfseek.drag .knob{width:40px;height:40px;margin:-20px 0 0 -20px}
+.mftimes{grid-area:times;width:100%;max-width:640px;display:flex;justify-content:space-between;font-size:18px;color:#ddd;font-variant-numeric:tabular-nums;margin-top:-8px}
+.mfhead .r{display:flex;gap:4px}
+/* 1: previous / next song, above the slider and well away from the skip buttons */
+.mfsong{grid-area:song;width:100%;max-width:520px;display:flex;justify-content:space-between;gap:20px;margin-top:4px}
+#mfull .mfsong button{flex:1 1 0;height:64px;border-radius:32px;background:#ffffff1c;display:flex;align-items:center;justify-content:center;gap:8px;font-size:19px;font-weight:700}
+#mfull .mfsong button:active{background:#ffffff33}
+#mfull .mfsong svg{width:34px;height:34px}
+/* 3: back 15 s / play / forward 15 s. Tap: 15 s, double-tap: 30 s */
+.mfctl{grid-area:ctl;width:100%;max-width:420px;display:flex;align-items:center;justify-content:space-between;margin-top:4px}
+#mfull .skip{width:92px;height:92px;position:relative;background:#ffffff1c;transition:background .15s}
+#mfull .skip:active{background:#ffffff33}
+#mfull .skip svg{width:58px;height:58px;transition:opacity .15s}
+#mfull .skip b{position:absolute;inset:0;display:grid;place-items:center;font-size:17px;font-weight:800;padding-top:7px;pointer-events:none}
+#mfull .skip.pend{background:var(--red)}
+#mfull .skip.pend svg{opacity:.22}
+#mfull .skip.pend b{font-size:26px;padding-top:0}
+#mfull #mfplay{width:108px;height:108px;background:#fff;color:#000}
+#mfull #mfplay:active{background:#ddd}
+#mfull #mfplay svg{width:58px;height:58px}
+.mfhint{grid-area:hint;font-size:13px;color:#8c8c8c}
+/* a phone on its side (a car mount): picture on the left, the same three rows on the right */
+@media (orientation:landscape) and (max-height:540px){
+ #mfull{display:grid;grid-template-columns:minmax(0,min(46vh,32vw)) minmax(0,1fr);
+   grid-template-areas:"head head" "art info" "art song" "art seek" "art times" "art ctl";grid-template-rows:auto auto auto auto auto 1fr;
+   column-gap:28px;row-gap:0;align-items:center;justify-items:center;
+   padding:max(4px,env(safe-area-inset-top)) max(24px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(24px,env(safe-area-inset-left))}
+ .mfart{max-width:none;height:100%;align-self:center}
+ #mftitle{font-size:20px}#mfsub{font-size:14px;margin-top:2px}
+ .mfsong{margin-top:6px}#mfull .mfsong button{height:50px}
+ .mfseek{height:44px;margin-top:2px}.mftimes{font-size:15px;margin-top:-6px}
+ .mfctl{max-width:380px;margin-top:0}
+ #mfull .skip{width:76px;height:76px}#mfull .skip svg{width:48px;height:48px}#mfull .skip b{font-size:15px;padding-top:6px}
+ #mfull #mfplay{width:86px;height:86px}#mfull #mfplay svg{width:48px;height:48px}
+ .mfhint{display:none}
+}
 /* profiles gate */
 #gate{position:fixed;inset:0;z-index:80;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:30px}
 #gate h1{font-weight:400;font-size:clamp(28px,4vw,52px);margin:0}
@@ -2191,8 +2252,10 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
  #search{width:130px}
  .hero{height:60vh}.hero .info{bottom:16%}
  .rows{margin-top:-6vh}
- #mbar{grid-template-columns:1fr auto;height:72px}
- .mright,.mseek{display:none}
+ #mbar{grid-template-columns:1fr auto;height:76px;padding:8px 10px 8px 12px}
+ .mright,.mseek,#mshuf,#mrep{display:none}
+ .mbtns{gap:4px}.mbtns button{min-width:48px;min-height:48px;font-size:22px;opacity:1}
+ .mbtns .pp{width:48px;height:48px;font-size:20px}
  .ep .art{width:100px;flex-basis:100px}
  .mhead.album{flex-direction:column;align-items:flex-start}.mhead.album .art{width:150px;flex-basis:auto}
 }
@@ -2220,7 +2283,7 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
   <video id="vid" playsinline preload="auto"></video>
   <div class="spinner hidden" id="pspin"></div>
   <div id="pmsg" class="hidden"></div>
-  <div class="pov ptop"><button id="pback" title="Back (Esc)">&#8592;</button><div id="ptitle"></div></div>
+  <div class="pov ptop"><button id="pback" title="Back (Esc)">&#8592;</button><div id="ptitle"></div><button id="pads" class="hidden" title="Skip ad breaks automatically, or ask each time"></button></div>
   <div id="pskip" class="hidden"><button id="pnotad" title="Never skip this part">Not an ad</button><button id="pskipbtn"></button></div>
   <div class="pov pbot">
     <div class="seekrow"><div class="seekwrap"><input type="range" id="pseek" min="0" max="1000" value="0" step="1"><div id="padbar"></div></div><span id="ptime">0:00</span></div>
@@ -2232,7 +2295,6 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
       <input type="range" id="pvol" min="0" max="1" step="0.05" value="1" style="width:90px">
       <span class="sp"></span>
       <span id="pmode" class="small"></span>
-      <button id="pads" class="hidden" title="Ad breaks"></button>
       <select id="psubs" title="Subtitles"></select>
       <button id="pnext" title="Next episode (N)" class="hidden">&#9197;</button>
       <button id="pfs" title="Full screen (F)">&#9974;</button>
@@ -2249,11 +2311,27 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
       <button id="mplay" class="pp" title="Play/Pause">&#9654;</button>
       <button id="mnext" title="Next">&#9197;</button>
       <button id="mrep" title="Repeat">&#8635;</button>
+      <button id="mexpand" title="Big controls (Now Playing)" aria-label="Open Now Playing"><svg viewBox="0 0 24 24"><path d="M7.4 15.4 12 10.8l4.6 4.6L18 14l-6-6-6 6z"/></svg></button>
     </div>
     <div class="mseek"><span id="mcur">0:00</span><input type="range" id="mseek" min="0" max="1000" value="0"><span id="mdur">0:00</span></div>
   </div>
   <div class="mright"><span>&#128264;</span><input type="range" id="mvol" min="0" max="1" step="0.05" value="1"><button id="mclose" title="Close">&#10005;</button></div>
   <audio id="aud" preload="auto"></audio>
+</div>
+
+<div id="mfull" class="hidden" role="dialog" aria-label="Now Playing">
+  <div class="mfhead"><button id="mfclose" aria-label="Close Now Playing"></button><span>Now Playing</span><span class="r"><button id="mfrep" aria-label="Repeat"></button><button id="mfshuf" aria-label="Shuffle"></button></span></div>
+  <div class="mfart" id="mfart"></div>
+  <div class="mfinfo"><div id="mftitle"></div><div id="mfsub" title="Open the album"></div></div>
+  <div class="mfsong"><button id="mfprev" aria-label="Previous song"></button><button id="mfnext" aria-label="Next song"></button></div>
+  <div class="mfseek" id="mfseek" role="slider" aria-label="Position in song"><div class="mftrack"><div class="fill" id="mffill"></div><div class="knob" id="mfknob"></div></div></div>
+  <div class="mftimes"><span id="mfcur">0:00</span><span id="mfdur">0:00</span></div>
+  <div class="mfctl">
+    <button id="mfback" class="skip" aria-label="Back 15 seconds (double-tap: 30)"></button>
+    <button id="mfplay" aria-label="Play or pause"></button>
+    <button id="mffwd" class="skip" aria-label="Forward 15 seconds (double-tap: 30)"></button>
+  </div>
+  <div class="mfhint">Tap: 15 s &middot; Double-tap: 30 s</div>
 </div>
 
 <script>
@@ -2452,7 +2530,14 @@ $('#pseek').onchange=e=>{P.drag=false;seekTo(e.target.value/1000*P.dur)};
 $('#pvol').oninput=e=>{vid.volume=e.target.value;vid.muted=false;localStorage.hf_vol=vid.volume};
 $('#pmute').onclick=()=>{vid.muted=!vid.muted;$('#pmute').innerHTML=vid.muted?'&#128263;':'&#128266;'};
 $('#psubs').onchange=e=>addSub(+e.target.value);
-function toggleFs(){if(document.fullscreenElement)document.exitFullscreen();else $('#player').requestFullscreen().catch(()=>{})}
+// Full screen: the whole player where the browser allows it (computers, Android, iPad). iPhones only
+// let the video itself go full screen, in Apple's own player, so use that there
+function toggleFs(){const d=document,el=$('#player');
+  if(d.fullscreenElement||d.webkitFullscreenElement){const x=(d.exitFullscreen||d.webkitExitFullscreen).call(d);if(x&&x.catch)x.catch(()=>{});return}
+  const req=el.requestFullscreen||el.webkitRequestFullscreen;
+  if(req&&(d.fullscreenEnabled||d.webkitFullscreenEnabled)){const x=req.call(el);if(x&&x.catch)x.catch(()=>{});return}
+  if(vid.webkitEnterFullscreen){try{vid.webkitEnterFullscreen()}catch(e){msg('Full screen works once the video has started')}return}
+  msg('This browser does not allow full screen')}
 $('#pfs').onclick=toggleFs;
 function poke(){const p=$('#player');p.classList.remove('idle');clearTimeout(P.idleT);P.idleT=setTimeout(()=>{if(!vid.paused)p.classList.add('idle')},3000)}
 $('#player').addEventListener('mousemove',poke);$('#player').addEventListener('touchstart',poke,{passive:true});
@@ -2463,11 +2548,10 @@ const autoSkip=()=>localStorage.hf_adskip==='1';
 async function loadAds(id){try{const r=await api('/api/ads/'+id);if(!P.it||P.it.id!==id)return;P.ads=r.breaks||[];P.adsState=r.status;adsUI();
   clearTimeout(P.adsT);if(r.status==='running'||r.status==='queued')P.adsT=setTimeout(()=>loadAds(id),20000)}catch(e){}}
 function adsUI(){const d=P.dur;$('#padbar').replaceChildren(...(d?P.ads.map(b=>{const i=h('i');i.style.left=b.start/d*100+'%';i.style.width=(b.end-b.start)/d*100+'%';return i}):[]));
-  const st=P.adsState,t=P.ads.length?(autoSkip()?'Ads: auto-skip':'Ads: ask'):st==='running'?'Finding ads…':st==='queued'?'Ads: waiting':st==='none'?'Find ads':'';
+  const t=P.ads.length?(autoSkip()?'Ads: auto-skip':'Ads: ask'):'';  // nothing at all for videos without ad breaks
   $('#pads').textContent=t;$('#pads').classList.toggle('hidden',!t)}
-$('#pads').onclick=async()=>{if(!P.it)return;
-  if(P.ads.length){localStorage.hf_adskip=autoSkip()?'0':'1';adsUI();msg(autoSkip()?'Ad breaks will be skipped automatically':'A Skip Ad button will show during ad breaks')}
-  else if(P.adsState==='none'){try{await post('/api/ads/'+P.it.id+'/find',{})}catch(e){}P.adsState='queued';adsUI();msg('Looking for ad breaks in the background. They show up on the timeline when found.',4000);loadAds(P.it.id)}};
+$('#pads').onclick=()=>{if(!P.it||!P.ads.length)return;localStorage.hf_adskip=autoSkip()?'0':'1';adsUI();
+  msg(autoSkip()?'Ad breaks will be skipped automatically':'A Skip Ad button will show during ad breaks')};
 // Called on every time update: auto-skip, or show the Skip Ad / Undo buttons
 function adTick(t){const box=$('#pskip');if(!P.ads.length){box.classList.add('hidden');return}
   const b=P.ads.find(x=>t>=x.start-.3&&t<x.end-1&&!P.allow.has(x));
@@ -2494,18 +2578,22 @@ function loadTrack(t){const tr=M.q[M.i];if(!tr)return;M.mode=(tr.direct||!S.tran
   aud.play().catch(()=>{});$('#mbar').classList.remove('hidden');document.body.classList.add('mplay');
   const al=S.albumByKey['album:'+tr.albumArtist+'\u0001'+tr.album];
   $('#mnow').replaceChildren(art(al?al.cover:tr.id,tr.album,true),h('div',{class:'tt'},h('b',{},tr.title),h('span',{},tr.artist+' — '+tr.album)));
-  $('#mnow').onclick=()=>al&&openAlbum(al);
+  $('#mnow').onclick=()=>matchMedia('(pointer:coarse)').matches?mfOpen():al&&openAlbum(al);  // phones: the big controls
+  if(MF.open)mfInfo();
   if('mediaSession'in navigator){navigator.mediaSession.metadata=new MediaMetadata({title:tr.title,artist:tr.artist,album:tr.album,artwork:[{src:'/thumb/'+(al?al.cover:tr.id),sizes:'500x500',type:'image/jpeg'}]})}
   document.querySelectorAll('.trk').forEach(()=>{});}
 const mcur=()=>M.off+(aud.currentTime||0),mdur=()=>(M.q[M.i]||{}).duration||(isFinite(aud.duration)?aud.duration:0);
 function mnext(){if(M.i<M.q.length-1){M.i++;loadTrack(0)}else if(M.rep){M.i=0;loadTrack(0)}else{aud.pause()}}
 function mprev(){if(mcur()>3){mseek(0);return}if(M.i>0){M.i--;loadTrack(0)}}
 function mseek(t){if(M.mode==='direct')aud.currentTime=t;else loadTrack(t)}
-function stopMusic(pauseOnly){aud.pause();if(!pauseOnly){aud.removeAttribute('src');aud.load();$('#mbar').classList.add('hidden');document.body.classList.remove('mplay')}}
+function stopMusic(pauseOnly){aud.pause();if(!pauseOnly){mfClose();aud.removeAttribute('src');aud.load();$('#mbar').classList.add('hidden');document.body.classList.remove('mplay')}}
 aud.addEventListener('ended',mnext);
 aud.addEventListener('error',()=>{if(!aud.getAttribute('src'))return;if(M.mode==='direct'&&S.transcode){M.mode='tx';const tr=M.q[M.i];aud.src=`/transcode/${tr.id}?t=0`;M.off=0;aud.play().catch(()=>{})}else mnext()});
-aud.addEventListener('play',()=>$('#mplay').innerHTML='&#10074;&#10074;');aud.addEventListener('pause',()=>$('#mplay').innerHTML='&#9654;');
-aud.addEventListener('timeupdate',()=>{const d=mdur();$('#mcur').textContent=fmtT(mcur());$('#mdur').textContent=fmtT(d);if(d&&!M.drag)$('#mseek').value=mcur()/d*1000});
+aud.addEventListener('play',()=>{$('#mplay').innerHTML='&#10074;&#10074;';mfPlayIcon()});aud.addEventListener('pause',()=>{$('#mplay').innerHTML='&#9654;';mfPlayIcon()});
+aud.addEventListener('timeupdate',()=>{const d=mdur();$('#mcur').textContent=fmtT(mcur());$('#mdur').textContent=fmtT(d);if(d&&!M.drag)$('#mseek').value=mcur()/d*1000;
+  if(MF.open&&!MF.drag&&!MF.skip)mfTime();
+  // the lock screen's (and the car's) progress bar
+  const ms=navigator.mediaSession;if(ms&&ms.setPositionState&&d&&Date.now()-(M.posAt||0)>1000){M.posAt=Date.now();try{ms.setPositionState({duration:d,position:Math.min(mcur(),d),playbackRate:1})}catch(e){}}});
 $('#mplay').onclick=()=>aud.paused?aud.play():aud.pause();$('#mnext').onclick=mnext;$('#mprev').onclick=mprev;
 $('#mseek').oninput=()=>M.drag=true;$('#mseek').onchange=e=>{M.drag=false;mseek(e.target.value/1000*mdur())};
 $('#mvol').oninput=e=>{aud.volume=e.target.value;localStorage.hf_mvol=aud.volume};if(localStorage.hf_mvol){aud.volume=+localStorage.hf_mvol;$('#mvol').value=aud.volume}
@@ -2514,14 +2602,64 @@ $('#mrep').onclick=()=>{M.rep=!M.rep;$('#mrep').classList.toggle('on',M.rep)};
 $('#mshuf').onclick=()=>{const curT=M.q[M.i];M.shuf=!M.shuf;$('#mshuf').classList.toggle('on',M.shuf);
   if(M.shuf){const rest=M.q.filter(t=>t!==curT);for(let k=rest.length-1;k>0;k--){const j=Math.floor(Math.random()*(k+1));[rest[k],rest[j]]=[rest[j],rest[k]]}M.q=[curT,...rest];M.i=0}
   else{M.q=[...M.orig];M.i=Math.max(0,M.q.indexOf(curT))}};
-if('mediaSession'in navigator){const ms=navigator.mediaSession;ms.setActionHandler('play',()=>aud.play());ms.setActionHandler('pause',()=>aud.pause());ms.setActionHandler('nexttrack',mnext);ms.setActionHandler('previoustrack',mprev)}
+if('mediaSession'in navigator){const ms=navigator.mediaSession;ms.setActionHandler('play',()=>aud.play());ms.setActionHandler('pause',()=>aud.pause());ms.setActionHandler('nexttrack',mnext);ms.setActionHandler('previoustrack',mprev);
+  try{ms.setActionHandler('seekto',d=>{if(d.seekTime!=null)mseek(d.seekTime)})}catch(e){}}  // drag the lock screen's progress bar
+
+/* ---------- Now Playing: big controls for phones and the car ---------- */
+const ICON={
+  play:'<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',
+  pause:'<svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>',
+  prev:'<svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>',
+  next:'<svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg>',
+  back:'<svg viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg>',
+  fwd:'<svg viewBox="0 0 24 24"><path d="M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z"/></svg>',
+  down:'<svg viewBox="0 0 24 24"><path d="M7.4 8.6 12 13.2l4.6-4.6L18 10l-6 6-6-6z"/></svg>',
+  shuf:'<svg viewBox="0 0 24 24"><path d="M10.6 9.2 5.4 4 4 5.4l5.2 5.2zM14.5 4l2 2L4 18.6 5.4 20 18 7.5l2 2V4zm.3 9.4-1.4 1.4 3.1 3.1L14.5 20H20v-5.5l-2 2z"/></svg>',
+  rep:'<svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z"/></svg>'};
+const MF={open:false,drag:false,lock:null};
+[['#mfclose','down'],['#mfshuf','shuf'],['#mfrep','rep']].forEach(([s,k])=>$(s).innerHTML=ICON[k]);
+$('#mfprev').innerHTML=ICON.prev+'Previous';$('#mfnext').innerHTML='Next'+ICON.next;
+$('#mfback').innerHTML=ICON.back+'<b>15</b>';$('#mffwd').innerHTML=ICON.fwd+'<b>15</b>';
+function mfPlayIcon(){$('#mfplay').innerHTML=aud.paused?ICON.play:ICON.pause}
+function mfAlbum(tr){return S.albumByKey['album:'+tr.albumArtist+'\u0001'+tr.album]}
+function mfInfo(){const tr=M.q[M.i];if(!tr)return;const al=mfAlbum(tr);
+  $('#mfart').replaceChildren(art(al?al.cover:tr.id,tr.album,true));$('#mftitle').textContent=tr.title;$('#mfsub').textContent=tr.artist+' — '+tr.album;
+  $('#mfshuf').classList.toggle('on',M.shuf);$('#mfrep').classList.toggle('on',M.rep);mfPlayIcon();mfTime()}
+function mfTime(t){const d=mdur(),c=t==null?mcur():t,f=d?Math.max(0,Math.min(1,c/d)):0;
+  $('#mffill').style.width=f*100+'%';$('#mfknob').style.left=f*100+'%';$('#mfcur').textContent=fmtT(c);$('#mfdur').textContent=fmtT(d);$('#mfseek').setAttribute('aria-valuenow',Math.round(c))}
+// keep the screen on while it's open (a phone in a car mount)
+async function mfWake(on){try{if(on&&!MF.lock&&'wakeLock'in navigator){MF.lock=await navigator.wakeLock.request('screen');MF.lock.addEventListener('release',()=>{MF.lock=null})}
+  else if(!on&&MF.lock){const l=MF.lock;MF.lock=null;await l.release()}}catch(e){}}
+document.addEventListener('visibilitychange',()=>{if(MF.open&&document.visibilityState==='visible')mfWake(true)});
+function mfOpen(){if(!M.q[M.i])return;MF.open=true;mfInfo();$('#mfull').classList.remove('hidden');document.body.classList.add('noscroll');mfWake(true)}
+function mfClose(){if(!MF.open)return;MF.open=false;$('#mfull').classList.add('hidden');if(!P.it)document.body.classList.remove('noscroll');mfWake(false)}
+$('#mexpand').onclick=mfOpen;$('#mfclose').onclick=mfClose;
+$('#mfsub').onclick=()=>{const tr=M.q[M.i],al=tr&&mfAlbum(tr);if(al){mfClose();openAlbum(al)}};
+$('#mfplay').onclick=()=>aud.paused?aud.play():aud.pause();
+$('#mfprev').onclick=mprev;$('#mfnext').onclick=mnext;
+// Skip back / forward: each tap adds 15 s, so a double-tap is 30 s. The jump happens a moment after the
+// last tap, as one seek; meanwhile the button turns red with the total and the slider shows where it lands
+function mfSkipButton(sel,dir){const b=$(sel),lab=b.querySelector('b');let n=0,from=0,timer=0;
+  const target=()=>{const d=mdur(),t=from+dir*15*n;return Math.max(0,d?Math.min(t,d-1):t)};
+  b.onclick=()=>{if(!n)from=mcur();n++;MF.skip=true;b.classList.add('pend');lab.textContent=(dir<0?'−':'+')+15*n;mfTime(target());
+    clearTimeout(timer);timer=setTimeout(()=>{const t=target();n=0;MF.skip=false;b.classList.remove('pend');lab.textContent='15';mseek(t)},450)}}
+mfSkipButton('#mfback',-1);mfSkipButton('#mffwd',1);
+$('#mfshuf').onclick=()=>{$('#mshuf').click();mfInfo()};$('#mfrep').onclick=()=>{$('#mrep').click();mfInfo()};
+// The seek bar: tap anywhere to jump there, or drag (the knob grows under your finger)
+{const sk=$('#mfseek'),frac=e=>{const r=sk.querySelector('.mftrack').getBoundingClientRect();return Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))};
+ const end=()=>{MF.drag=false;sk.classList.remove('drag')};
+ sk.addEventListener('pointerdown',e=>{if(!mdur())return;MF.drag=true;sk.classList.add('drag');try{sk.setPointerCapture(e.pointerId)}catch(_){}mfTime(frac(e)*mdur())});
+ sk.addEventListener('pointermove',e=>{if(MF.drag)mfTime(frac(e)*mdur())});
+ sk.addEventListener('pointerup',e=>{if(!MF.drag)return;end();const d=mdur();if(d)mseek(Math.min(frac(e)*d,d-0.5))});
+ sk.addEventListener('pointercancel',()=>{end();mfTime()})}
 
 /* ---------- keyboard ---------- */
 document.addEventListener('keydown',e=>{if(e.target.matches('input[type=search],input[type=text]'))return;
   if(P.it){const k=e.key;if(k===' '||k==='k'){e.preventDefault();togglePlay()}else if(k==='ArrowLeft'){seekTo(cur()-10)}else if(k==='ArrowRight'){seekTo(cur()+10)}
     else if(k==='ArrowUp'){e.preventDefault();vid.volume=Math.min(1,vid.volume+.1)}else if(k==='ArrowDown'){e.preventDefault();vid.volume=Math.max(0,vid.volume-.1)}
     else if(k==='f')toggleFs();else if(k==='m')$('#pmute').click();else if(k==='n')$('#pnext').click();else if(k==='s'&&!$('#pskip').classList.contains('hidden'))$('#pskipbtn').click();else if(k==='Escape'&&!document.fullscreenElement)closePlayer();poke();return}
-  if(e.key==='Escape'&&!$('#modal').classList.contains('hidden'))closeModal();
+  if(e.key==='Escape'&&MF.open)mfClose();
+  else if(e.key==='Escape'&&!$('#modal').classList.contains('hidden'))closeModal();
   else if(e.key===' '&&!$('#mbar').classList.contains('hidden')&&e.target===document.body){e.preventDefault();$('#mplay').click()}
   else if(e.key==='/'){e.preventDefault();$('#search').focus()}});
 
@@ -2589,9 +2727,9 @@ def main():
                     help="quality for files that must be converted: balanced (lighter on CPU and Wi-Fi), "
                          "high (default) or max (or set HOMEFLIX_QUALITY)")
     ap.add_argument("--no-thumbs", action="store_true", help="don't generate thumbnails")
-    ap.add_argument("--ads", choices=ADS_MODES, default=os.environ.get("HOMEFLIX_ADS", "auto"),
-                    help="find ad breaks in the background: auto (TV recordings: .ts, .m2ts, .mpg; default), "
-                         "all (every video), off (only when asked from the player) (or set HOMEFLIX_ADS)")
+    ap.add_argument("--ads", choices=ADS_MODES, default=os.environ.get("HOMEFLIX_ADS", "off"),
+                    help="commercial skipping: off (default), auto (find ad breaks in TV recordings: "
+                         ".ts, .m2ts, .mpg) or all (every video) (or set HOMEFLIX_ADS)")
     ap.add_argument("--quiet", action="store_true", help="don't log every HTTP request")
     ap.add_argument("--version", action="version", version=f"Homeflix {VERSION}")
     a = ap.parse_args()
@@ -2646,7 +2784,8 @@ def main():
     log(f"Homeflix {VERSION} serving {', '.join(str(r) for r in lib.roots)}")
     if FFMPEG and VENC:
         log(f"  Conversion quality: {a.quality} (change with --quality or HOMEFLIX_QUALITY)")
-        log(f"  Ad break finder: {a.ads} (change with --ads or HOMEFLIX_ADS)")
+        log(f"  Commercial skipping: {a.ads}" + (" (turn on with --ads auto or HOMEFLIX_ADS=auto)" if a.ads == "off"
+                                                  else " (change with --ads or HOMEFLIX_ADS)"))
     log(f"  This PC:      http://localhost:{a.port}")
     if a.host in ("0.0.0.0", "::", ""):
         for ip in lan_ips():
