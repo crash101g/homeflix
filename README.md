@@ -78,7 +78,8 @@ It's one file and uses nothing outside the Python standard library. You can read
 - Cover art is taken from embedded artwork or `cover.jpg` / `folder.jpg`.
 - A **persistent player bar** with shuffle and repeat that keeps playing while you browse.
 - **Lock-screen and media-key controls** on phones.
-- A **Now Playing** screen with big, easy-to-hit buttons for phones: tap the music bar to open it. **Previous / Next** sit up top, then a progress bar you can tap or drag anywhere, then **back 15 s · play · forward 15 s** (double-tap to skip 30 s). It keeps the screen on while it's open, and works sideways in a car mount.
+- On phones the music bar has **big previous / play / next buttons**, a **Big player** button, and a slider along its top edge: **tap anywhere on it to jump** to that part of the song, or drag.
+- A **Now Playing** screen with big, easy-to-hit buttons for phones: tap **Big player** (or the song) to open it. **Previous / Next** sit up top, then a progress bar you can tap or drag anywhere, then **back 15 s · play · forward 15 s** (double-tap to skip 30 s). It keeps the screen on while it's open, and works sideways in a car mount.
 
 <p align="center"><img src="docs/screenshots/music.png" alt="Album view with the track list, the current track highlighted, and the music player bar at the bottom" width="100%"></p>
 
@@ -106,6 +107,9 @@ It's one file and uses nothing outside the Python standard library. You can read
 <p align="center">
   <img src="docs/screenshots/ad-skip-phone.jpg" alt="The same ad break on a phone held sideways, with the Skip Ad button and ad-break marks" width="70%">
 </p>
+
+### Big controls on phones and tablets
+Big **back 30 s · play/pause · forward 30 s** buttons in the middle of the picture, a progress bar you can **tap anywhere to jump** (or drag), and large **mute** and **full screen** buttons. Tap the picture to show or hide the controls.
 
 ### Keyboard-first player
 `Space` play/pause · `←` `→` skip 10s · `↑` `↓` volume · `F` full screen · `M` mute · `N` next episode · `S` skip ad · `Esc` back

@@ -52,7 +52,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.3.4"
+VERSION = "1.3.8"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -2160,6 +2160,32 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
 .pctl button{background:none;border:0;font-size:24px;min-width:32px}
 .pctl .sp{flex:1}
 .pctl select{background:#000a;color:#fff;border:1px solid #666;padding:4px}
+#pcenter,.ptimes{display:none}
+/* Phones and tablets: big controls. Back 30 s / play / forward 30 s in the middle of the picture, a
+   slider you can tap anywhere above mute and full screen at the bottom */
+#player.touch #pcenter{display:flex;top:50%;transform:translateY(-50%);justify-content:center;align-items:center;gap:44px;pointer-events:none}
+#player.touch #pcenter button{pointer-events:auto}
+#player.touch.idle .pov,#player.touch.idle #pcenter button{pointer-events:none}
+#player.touch .pcbtn{display:grid;place-items:center;border:0;padding:0;border-radius:50%;color:#fff;cursor:pointer;-webkit-tap-highlight-color:transparent}
+#player.touch .pcbtn svg{fill:currentColor}
+#player.touch #pplay{width:96px;height:96px;background:#ffffff38;color:#fff;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+#player.touch #pplay svg{width:52px;height:52px}
+#player.touch #prew,#player.touch #pfwd{width:80px;height:80px;position:relative;background:#ffffff2e;-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
+#player.touch #prew svg,#player.touch #pfwd svg{width:52px;height:52px}
+#player.touch .pcbtn b{position:absolute;inset:0;display:grid;place-items:center;font-size:15px;font-weight:800;padding-top:6px;pointer-events:none}
+#player.touch .pcbtn:active{filter:brightness(.85)}
+#player.touch .pbot{padding:10px 20px max(18px,env(safe-area-inset-bottom));background:linear-gradient(#0000,#000d 40%)}
+#player.touch .seekwrap{height:48px;touch-action:none;cursor:pointer}
+#player.touch #pseek{pointer-events:none;-webkit-appearance:none;appearance:none;height:8px;border-radius:4px;background:linear-gradient(to right,var(--red) var(--pct,0%),#ffffff4d var(--pct,0%))}
+#player.touch #pseek::-webkit-slider-thumb{-webkit-appearance:none;width:26px;height:26px;border-radius:50%;background:var(--red);border:0;box-shadow:0 2px 8px #000a}
+#player.touch #pseek::-moz-range-thumb{width:26px;height:26px;border-radius:50%;background:var(--red);border:0}
+#player.touch #ptime{display:none}
+#player.touch .ptimes{display:flex;justify-content:space-between;font-size:16px;color:#ddd;margin-top:-6px;font-variant-numeric:tabular-nums}
+#player.touch #padbar{top:calc(50% + 6px)}
+#player.touch .pctl{margin-top:4px;gap:8px}
+#player.touch .pctl button{width:56px;height:56px;min-width:56px;display:grid;place-items:center;border-radius:50%}
+#player.touch .pctl button svg{width:32px;height:32px;fill:currentColor}
+#player.touch #pskip{top:76px;bottom:auto;right:16px}
 #pmsg{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:#000c;padding:14px 22px;border-radius:6px;z-index:3;font-size:16px;pointer-events:none}
 .spinner{width:52px;height:52px;border:5px solid #fff3;border-top-color:var(--red);border-radius:50%;animation:sp 1s linear infinite;position:absolute;left:50%;top:50%;margin:-26px;z-index:1;pointer-events:none}
 @keyframes sp{to{transform:rotate(360deg)}}
@@ -2181,6 +2207,35 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
 .mright input{width:100px}
 .mright button{background:none;border:0;font-size:18px}
 #mexpand{font-size:0!important}#mexpand svg{width:22px;height:22px;fill:currentColor;vertical-align:middle}
+#mprog,#mptimes{display:none}
+/* Phones and tablets: the music bar in two rows. Song + "Big player" on top, big previous / play / next
+   below, and a thin progress line along the top edge */
+#mbar.touch{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"prog prog" "times times" "now open" "ctl ctl";height:auto;gap:0;
+  padding:0 0 max(14px,env(safe-area-inset-bottom));align-items:center}
+/* the top edge is a slider: tap anywhere to jump there, or drag (the knob grows under your finger) */
+#mbar.touch #mprog{display:flex;grid-area:prog;height:40px;margin-top:-20px;padding:0 12px;align-items:center;touch-action:none;cursor:pointer}
+#mbar.touch #mprog .mptrk{position:relative;width:100%;height:6px;background:#ffffff38;border-radius:3px}
+#mbar.touch #mprog i{position:absolute;left:0;top:0;bottom:0;width:0;background:#fff;border-radius:3px}
+#mbar.touch #mprog em{position:absolute;top:50%;left:0;width:22px;height:22px;margin:-11px 0 0 -11px;background:#fff;border-radius:50%;box-shadow:0 2px 6px #000a;transition:width .1s,height .1s,margin .1s}
+#mbar.touch #mprog.drag em{width:32px;height:32px;margin:-16px 0 0 -16px}
+#mbar.touch #mptimes{display:flex;grid-area:times;justify-content:space-between;padding:0 14px;margin-top:-10px;font-size:13px;color:#bbb;font-variant-numeric:tabular-nums}
+#mbar.touch .now{grid-area:now;padding:4px 10px 4px 14px;gap:12px}
+#mbar.touch .now .art{width:52px;flex-basis:52px}
+#mbar.touch .tt b{font-size:17px}#mbar.touch .tt span{font-size:14px}
+#mbar.touch #mexpand{grid-area:open;font-size:15px!important;font-weight:700;height:52px;padding:0 16px;margin:12px 14px 4px 0;border-radius:26px;
+  background:#ffffff1f;display:flex;align-items:center;gap:6px;color:#fff;border:0;white-space:nowrap;cursor:pointer;margin-top:4px}
+#mbar.touch #mexpand svg{width:22px;height:22px}
+#mbar.touch .mctr{grid-area:ctl;padding-top:6px}
+#mbar.touch .mseek,#mbar.touch #mshuf,#mbar.touch #mrep,#mbar.touch .mright{display:none}
+#mbar.touch .mbtns{gap:34px}
+#mbar.touch .mbtns button{width:72px;height:72px;min-width:72px;min-height:72px;border-radius:50%;display:grid;place-items:center;opacity:1;color:#fff;padding:0;-webkit-tap-highlight-color:transparent}
+#mbar.touch .mbtns button:active{background:#ffffff1f}
+#mbar.touch .mbtns svg{width:46px;height:46px;fill:currentColor}
+#mbar.touch .mbtns .pp{width:84px;height:84px;background:#fff;color:#000}
+#mbar.touch .mbtns .pp:active{background:#ddd}
+#mbar.touch .mbtns .pp svg{width:48px;height:48px}
+body.mplay.touchbar main{padding-bottom:230px}
+body.mplay.touchbar .scanning{bottom:200px}
 /* Now Playing: big controls, made for phones (and the car) */
 #mfull{position:fixed;inset:0;z-index:70;background:linear-gradient(#2b2b2b,#090909 70%);display:flex;flex-direction:column;align-items:center;gap:12px;
   padding:max(10px,env(safe-area-inset-top)) 20px max(18px,env(safe-area-inset-bottom));touch-action:manipulation;-webkit-user-select:none;user-select:none;overflow:hidden}
@@ -2283,10 +2338,12 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
   <video id="vid" playsinline preload="auto"></video>
   <div class="spinner hidden" id="pspin"></div>
   <div id="pmsg" class="hidden"></div>
+  <div class="pov" id="pcenter"></div>
   <div class="pov ptop"><button id="pback" title="Back (Esc)">&#8592;</button><div id="ptitle"></div><button id="pads" class="hidden" title="Skip ad breaks automatically, or ask each time"></button></div>
   <div id="pskip" class="hidden"><button id="pnotad" title="Never skip this part">Not an ad</button><button id="pskipbtn"></button></div>
   <div class="pov pbot">
     <div class="seekrow"><div class="seekwrap"><input type="range" id="pseek" min="0" max="1000" value="0" step="1"><div id="padbar"></div></div><span id="ptime">0:00</span></div>
+    <div class="ptimes"><span id="ptcur">0:00</span><span id="ptdur">0:00</span></div>
     <div class="pctl">
       <button id="pplay" title="Play/Pause (Space)">&#10074;&#10074;</button>
       <button id="prew" title="Back 10s (&larr;)">&#8634;</button>
@@ -2303,6 +2360,8 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
 </div>
 
 <div id="mbar" class="hidden">
+  <div id="mprog" role="slider" aria-label="Position in song"><div class="mptrk"><i></i><em></em></div></div>
+  <div id="mptimes"><span id="mpcur">0:00</span><span id="mpdur">0:00</span></div>
   <div class="now" id="mnow"></div>
   <div class="mctr">
     <div class="mbtns">
@@ -2508,27 +2567,54 @@ function msg(t,ms=2500){const m=$('#pmsg');m.textContent=t;m.classList.remove('h
 // HEVC passthrough failed (an error, or audio with no picture): convert it after all
 function hevcFail(){const t=cur();P.hevc=false;msg('Converting this file for your browser…');loadVid(t)}
 vid.addEventListener('loadedmetadata',()=>{if(P.mode==='tx'&&P.hevc&&!vid.videoWidth)return hevcFail();if(P.mode==='direct'){if(isFinite(vid.duration))P.dur=vid.duration;if(P.pending){vid.currentTime=P.pending;P.pending=0}}adsUI()});
-vid.addEventListener('waiting',()=>spin(true));vid.addEventListener('playing',()=>{if(P.mode==='tx'&&P.hevc&&!vid.videoWidth)return hevcFail();spin(false);$('#pplay').innerHTML='&#10074;&#10074;'});
+vid.addEventListener('waiting',()=>spin(true));vid.addEventListener('playing',()=>{if(P.mode==='tx'&&P.hevc&&!vid.videoWidth)return hevcFail();spin(false);playIcon()});
 vid.addEventListener('canplay',()=>spin(false));
-vid.addEventListener('pause',()=>{$('#pplay').innerHTML='&#9654;';saveProg(true)});
+vid.addEventListener('pause',()=>{playIcon();saveProg(true)});
 vid.addEventListener('error',()=>{if(!P.it||!vid.getAttribute('src'))return;spin(false);
   if(P.mode==='direct'&&S.transcode){const t=cur();P.mode='tx';msg('Converting this file for your browser…');loadVid(t)}
   else if(P.mode==='tx'&&P.hevc)hevcFail()
   else msg(S.transcode?'Sorry, this file could not be played.':'Your browser cannot play this format and ffmpeg is not installed on the server.',6000)});
-vid.addEventListener('timeupdate',()=>{const t=cur();adTick(t);if(!P.drag&&P.dur)$('#pseek').value=t/P.dur*1000;$('#ptime').textContent=fmtT(t)+' / '+fmtT(P.dur);if(Date.now()-P.lastSave>10000)saveProg()});
+vid.addEventListener('timeupdate',()=>{const t=cur();adTick(t);if(!P.drag&&P.dur)seekShow(t);$('#ptime').textContent=fmtT(t)+' / '+fmtT(P.dur);$('#ptdur').textContent=fmtT(P.dur);if(Date.now()-P.lastSave>10000)saveProg()});
 vid.addEventListener('ended',async()=>{if(P.mode==='tx'&&P.dur&&cur()<P.dur-30){return}await saveProg(true,true);const n=nextEp(P.it);if(n){msg('Next episode…');playVideo(n,0)}else closePlayer()});
 async function saveProg(force,done){if(!P.it)return;P.lastSave=Date.now();const t=cur();if(!force&&t<5)return;const body={profile:S.profile.id,id:P.it.id,pos:t,dur:P.dur};if(done)body.done=true;
   S.progress[P.it.id]={pos:t,dur:P.dur,done:done||(P.dur&&t>=P.dur*.93),updated:Date.now()/1000};try{await post('/api/progress',body)}catch(e){}}
 function closePlayer(){if(!P.it)return;saveProg(true);P.it=null;clearTimeout(P.adsT);$('#pskip').classList.add('hidden');vid.pause();vid.removeAttribute('src');vid.load();
   if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});$('#player').classList.add('hidden');document.body.classList.remove('noscroll');render()}
 const togglePlay=()=>vid.paused?vid.play():vid.pause();
-$('#pplay').onclick=togglePlay;vid.onclick=togglePlay;vid.ondblclick=()=>toggleFs();
-$('#prew').onclick=()=>seekTo(cur()-10);$('#pfwd').onclick=()=>seekTo(cur()+10);
+/* Phones and tablets get the big-button layout (TOUCH); computers keep the bottom bar */
+const TOUCH=matchMedia('(pointer:coarse)').matches,SKIP=TOUCH?30:10;
+const VI={play:'<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',pause:'<svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>',
+  rew:'<svg viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg>',
+  fwd:'<svg viewBox="0 0 24 24"><path d="M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z"/></svg>',
+  vol:'<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg>',
+  mute:'<svg viewBox="0 0 24 24"><path d="M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.5 2.5zM19 12a7 7 0 0 1-.6 2.8l1.5 1.5A9 9 0 0 0 14 3.2v2.1a7 7 0 0 1 5 6.7zM4.3 3 3 4.3 7.7 9H3v6h4l5 5v-6.7l4.3 4.2a7 7 0 0 1-2.3 1.2v2.1a9 9 0 0 0 3.7-1.8l2 2 1.3-1.3zM12 4 9.9 6.1 12 8.2z"/></svg>',
+  fs:'<svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7zm-2-4h2V7h3V5H5zm12 7h-3v2h5v-5h-2zM14 5v2h3v3h2V5z"/></svg>',
+  next:'<svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg>'};
+function playIcon(){$('#pplay').innerHTML=vid.paused?(TOUCH?VI.play:'&#9654;'):(TOUCH?VI.pause:'&#10074;&#10074;')}
+function muteIcon(){$('#pmute').innerHTML=TOUCH?(vid.muted?VI.mute:VI.vol):(vid.muted?'&#128263;':'&#128266;')}
+// the slider's position (and, on phones, the red part of the bar and the time under it)
+function seekShow(t){if(!P.dur)return;const f=Math.max(0,Math.min(1,t/P.dur));$('#pseek').value=f*1000;$('#pseek').style.setProperty('--pct',f*100+'%');$('#ptcur').textContent=fmtT(t)}
+if(TOUCH){$('#player').classList.add('touch');$('#pcenter').append($('#prew'),$('#pplay'),$('#pfwd'));
+  for(const b of ['#prew','#pplay','#pfwd'])$(b).classList.add('pcbtn');
+  $('#prew').innerHTML=VI.rew+'<b>30</b>';$('#pfwd').innerHTML=VI.fwd+'<b>30</b>';$('#prew').title='Back 30 seconds';$('#pfwd').title='Forward 30 seconds';
+  $('#pfs').innerHTML=VI.fs;$('#pnext').innerHTML=VI.next;muteIcon();playIcon();
+  // tap the picture to show or hide the controls (pause with the big button)
+  vid.onclick=()=>{if(!vid.paused){clearTimeout(P.idleT);$('#player').classList.add('idle')}};
+  // the slider: tap anywhere to jump there, or drag
+  const sw=document.querySelector('.seekwrap'),fr=e=>{const r=sw.getBoundingClientRect();return Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))};
+  let drag=false;const show=e=>{seekShow(fr(e)*P.dur);poke()};
+  sw.addEventListener('pointerdown',e=>{if(!P.dur)return;drag=true;P.drag=true;try{sw.setPointerCapture(e.pointerId)}catch(_){}show(e);e.preventDefault()});
+  sw.addEventListener('pointermove',e=>{if(drag)show(e)});
+  sw.addEventListener('pointerup',e=>{if(!drag)return;drag=false;P.drag=false;seekTo(fr(e)*P.dur)});
+  sw.addEventListener('pointercancel',()=>{drag=false;P.drag=false})}
+else{vid.onclick=togglePlay;vid.ondblclick=()=>toggleFs()}
+$('#pplay').onclick=togglePlay;
+$('#prew').onclick=()=>seekTo(cur()-SKIP);$('#pfwd').onclick=()=>seekTo(cur()+SKIP);
 $('#pback').onclick=closePlayer;$('#pnext').onclick=()=>{saveProg(true,true);const n=nextEp(P.it);if(n)playVideo(n,0)};
 $('#pseek').oninput=e=>{P.drag=true;$('#ptime').textContent=fmtT(e.target.value/1000*P.dur)+' / '+fmtT(P.dur)};
 $('#pseek').onchange=e=>{P.drag=false;seekTo(e.target.value/1000*P.dur)};
 $('#pvol').oninput=e=>{vid.volume=e.target.value;vid.muted=false;localStorage.hf_vol=vid.volume};
-$('#pmute').onclick=()=>{vid.muted=!vid.muted;$('#pmute').innerHTML=vid.muted?'&#128263;':'&#128266;'};
+$('#pmute').onclick=()=>{vid.muted=!vid.muted;muteIcon()};
 $('#psubs').onchange=e=>addSub(+e.target.value);
 // Full screen: the whole player where the browser allows it (computers, Android, iPad). iPhones only
 // let the video itself go full screen, in Apple's own player, so use that there
@@ -2540,7 +2626,11 @@ function toggleFs(){const d=document,el=$('#player');
   msg('This browser does not allow full screen')}
 $('#pfs').onclick=toggleFs;
 function poke(){const p=$('#player');p.classList.remove('idle');clearTimeout(P.idleT);P.idleT=setTimeout(()=>{if(!vid.paused)p.classList.add('idle')},3000)}
-$('#player').addEventListener('mousemove',poke);$('#player').addEventListener('touchstart',poke,{passive:true});
+$('#player').addEventListener('mousemove',poke);
+// Phones: a tap while the controls are hidden only brings them back. Without this, the controls appear
+// under the finger before the tap finishes, and the same tap would press whatever button is there
+$('#player').addEventListener('touchstart',()=>{if(TOUCH&&$('#player').classList.contains('idle'))P.wakeTap=Date.now();poke()},{passive:true});
+$('#player').addEventListener('click',e=>{if(P.wakeTap&&Date.now()-P.wakeTap<700){P.wakeTap=0;e.stopPropagation();e.preventDefault()}},true);
 if(localStorage.hf_vol){vid.volume=+localStorage.hf_vol;$('#pvol').value=vid.volume}
 
 /* ---------- ad breaks ---------- */
@@ -2589,8 +2679,9 @@ function mseek(t){if(M.mode==='direct')aud.currentTime=t;else loadTrack(t)}
 function stopMusic(pauseOnly){aud.pause();if(!pauseOnly){mfClose();aud.removeAttribute('src');aud.load();$('#mbar').classList.add('hidden');document.body.classList.remove('mplay')}}
 aud.addEventListener('ended',mnext);
 aud.addEventListener('error',()=>{if(!aud.getAttribute('src'))return;if(M.mode==='direct'&&S.transcode){M.mode='tx';const tr=M.q[M.i];aud.src=`/transcode/${tr.id}?t=0`;M.off=0;aud.play().catch(()=>{})}else mnext()});
-aud.addEventListener('play',()=>{$('#mplay').innerHTML='&#10074;&#10074;';mfPlayIcon()});aud.addEventListener('pause',()=>{$('#mplay').innerHTML='&#9654;';mfPlayIcon()});
+aud.addEventListener('play',()=>{mPlayIcon();mfPlayIcon()});aud.addEventListener('pause',()=>{mPlayIcon();mfPlayIcon()});
 aud.addEventListener('timeupdate',()=>{const d=mdur();$('#mcur').textContent=fmtT(mcur());$('#mdur').textContent=fmtT(d);if(d&&!M.drag)$('#mseek').value=mcur()/d*1000;
+  if(TOUCH&&d&&!M.sdrag)mpShow(mcur());
   if(MF.open&&!MF.drag&&!MF.skip)mfTime();
   // the lock screen's (and the car's) progress bar
   const ms=navigator.mediaSession;if(ms&&ms.setPositionState&&d&&Date.now()-(M.posAt||0)>1000){M.posAt=Date.now();try{ms.setPositionState({duration:d,position:Math.min(mcur(),d),playbackRate:1})}catch(e){}}});
@@ -2614,6 +2705,7 @@ const ICON={
   back:'<svg viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg>',
   fwd:'<svg viewBox="0 0 24 24"><path d="M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z"/></svg>',
   down:'<svg viewBox="0 0 24 24"><path d="M7.4 8.6 12 13.2l4.6-4.6L18 10l-6 6-6-6z"/></svg>',
+  up:'<svg viewBox="0 0 24 24"><path d="M7.4 15.4 12 10.8l4.6 4.6L18 14l-6-6-6 6z"/></svg>',
   shuf:'<svg viewBox="0 0 24 24"><path d="M10.6 9.2 5.4 4 4 5.4l5.2 5.2zM14.5 4l2 2L4 18.6 5.4 20 18 7.5l2 2V4zm.3 9.4-1.4 1.4 3.1 3.1L14.5 20H20v-5.5l-2 2z"/></svg>',
   rep:'<svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z"/></svg>'};
 const MF={open:false,drag:false,lock:null};
@@ -2644,6 +2736,21 @@ function mfSkipButton(sel,dir){const b=$(sel),lab=b.querySelector('b');let n=0,f
   b.onclick=()=>{if(!n)from=mcur();n++;MF.skip=true;b.classList.add('pend');lab.textContent=(dir<0?'−':'+')+15*n;mfTime(target());
     clearTimeout(timer);timer=setTimeout(()=>{const t=target();n=0;MF.skip=false;b.classList.remove('pend');lab.textContent='15';mseek(t)},450)}}
 mfSkipButton('#mfback',-1);mfSkipButton('#mffwd',1);
+
+/* Phones and tablets: the music bar in two rows with big buttons (computers keep the one-row bar) */
+function mPlayIcon(){$('#mplay').innerHTML=aud.paused?(TOUCH?ICON.play:'&#9654;'):(TOUCH?ICON.pause:'&#10074;&#10074;')}
+if(TOUCH){const mb=$('#mbar');mb.classList.add('touch');document.body.classList.add('touchbar');
+  mb.insertBefore($('#mexpand'),mb.querySelector('.mctr'));$('#mexpand').innerHTML=ICON.up+'Big player';
+  $('#mprev').innerHTML=ICON.prev;$('#mnext').innerHTML=ICON.next;mPlayIcon();
+  // the slider along the top edge: tap anywhere to jump there, or drag
+  const pr=$('#mprog'),fr=e=>{const r=pr.querySelector('.mptrk').getBoundingClientRect();return Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))};
+  const end=()=>{M.sdrag=false;pr.classList.remove('drag')};
+  pr.addEventListener('pointerdown',e=>{if(!mdur())return;M.sdrag=true;pr.classList.add('drag');try{pr.setPointerCapture(e.pointerId)}catch(_){}mpShow(fr(e)*mdur());e.preventDefault()});
+  pr.addEventListener('pointermove',e=>{if(M.sdrag)mpShow(fr(e)*mdur())});
+  pr.addEventListener('pointerup',e=>{if(!M.sdrag)return;end();const d=mdur();if(d)mseek(Math.min(fr(e)*d,d-0.5))});
+  pr.addEventListener('pointercancel',()=>{end();mpShow(mcur())})}
+function mpShow(t){const d=mdur(),f=d?Math.max(0,Math.min(1,t/d)):0;$('#mprog i').style.width=f*100+'%';$('#mprog em').style.left=f*100+'%';
+  $('#mpcur').textContent=fmtT(t);$('#mpdur').textContent=fmtT(d);$('#mprog').setAttribute('aria-valuenow',Math.round(t))}
 $('#mfshuf').onclick=()=>{$('#mshuf').click();mfInfo()};$('#mfrep').onclick=()=>{$('#mrep').click();mfInfo()};
 // The seek bar: tap anywhere to jump there, or drag (the knob grows under your finger)
 {const sk=$('#mfseek'),frac=e=>{const r=sk.querySelector('.mftrack').getBoundingClientRect();return Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))};
