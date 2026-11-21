@@ -52,7 +52,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.4.2"
+VERSION = "1.5.0"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -90,6 +90,66 @@ def app_dirs():
 
 CONF_DIR, XDG_DATA, XDG_CACHE = app_dirs()
 CONF_FILE = CONF_DIR / "env"
+DEFAULT_CONF_FILE = CONF_FILE
+HOME_FROM = ""  # where HOMEFLIX_HOME came from, if it's in use
+
+
+def choose_home(argv):
+    """Put everything (settings, data and cache) in one folder if asked to: --home DIR, the
+    HOMEFLIX_HOME environment variable, or a HOMEFLIX_HOME line in the usual settings file."""
+    global CONF_DIR, XDG_DATA, XDG_CACHE, CONF_FILE, HOME_FROM
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--home")
+    home, src = pre.parse_known_args(argv)[0].home, "--home"
+    if not home and os.environ.get("HOMEFLIX_HOME"):
+        home, src = os.environ["HOMEFLIX_HOME"], "the HOMEFLIX_HOME environment variable"
+    if not home:
+        home, src = read_settings(DEFAULT_CONF_FILE).get("HOMEFLIX_HOME"), f"HOMEFLIX_HOME in {DEFAULT_CONF_FILE}"
+    if not home:
+        return
+    root = Path(home).expanduser().resolve()
+    CONF_DIR, XDG_DATA, XDG_CACHE, CONF_FILE, HOME_FROM = root, root, root / "cache", root / "env", src
+
+
+def folder_size(path: Path):
+    total = 0
+    for dirpath, _, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, f))
+            except OSError:
+                pass
+    return total
+
+
+def human_size(n):
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "bytes" else f"{n:.1f} {unit}"
+        n /= 1024
+
+
+def print_where(videos, music):
+    """homeflix --where: show every folder Homeflix uses on this computer."""
+    def show(label, path, what):
+        state = (human_size(folder_size(path)) if path.is_dir() else "exists") if path.exists() else "not created yet"
+        print(f"  {label:<14}{path}  ({state})")
+        print(f"  {'':<14}{what}")
+    print(f"Homeflix {VERSION} keeps its files here:")
+    if HOME_FROM:
+        print(f"  (all in one folder, set by {HOME_FROM})")
+    show("Settings file", CONF_FILE, "port, password, media folders and other options")
+    if HOME_FROM and DEFAULT_CONF_FILE.exists() and DEFAULT_CONF_FILE != CONF_FILE:
+        print(f"  {'':<14}(anything not set there comes from {DEFAULT_CONF_FILE})")
+    show("Data folder", XDG_DATA, "profiles, watch history, sign-in key, 'Not an ad' choices")
+    show("Cache folder", XDG_CACHE, "thumbnails, subtitles, file details, ad breaks: safe to delete")
+    print("\nIt reads your media from (and never writes there):")
+    for label, roots in (("Videos", videos), ("Music", music)):
+        for r in roots:
+            p = Path(r).expanduser()
+            print(f"  {label:<14}{p}" + ("" if p.is_dir() else "  (not found)"))
+    if not HOME_FROM:
+        print("\nTo keep everything in one folder instead, set HOMEFLIX_HOME (see the README).")
 
 def find_tool(name):
     """Find ffmpeg/ffprobe on PATH, or where common installers put them (a background
@@ -121,16 +181,15 @@ LOW_PRIO = dict(SUBPROC, creationflags=SUBPROC["creationflags"] | getattr(subpro
     if WINDOWS else {}
 
 
-def load_settings(path: Path):
-    """Read KEY="value" lines from the settings file into os.environ.
-
-    Real environment variables and command-line flags still win. Values may be bare or
+def read_settings(path: Path):
+    """HOMEFLIX_* values from a settings file of KEY="value" lines. Values may be bare or
     double-quoted with \\ and \" escapes (the format the installers write, which systemd
     also reads)."""
+    found = {}
     try:
         lines = path.read_text(encoding="utf-8-sig").splitlines()
     except OSError:
-        return
+        return found
     for line in lines:
         k, sep, v = line.strip().partition("=")
         k = k.strip()
@@ -145,6 +204,14 @@ def load_settings(path: Path):
                 out.append(v[i])
                 i += 1
             v = "".join(out)
+        found[k] = v
+    return found
+
+
+def load_settings(path: Path):
+    """Put a settings file's values into os.environ. Real environment variables and
+    command-line flags still win."""
+    for k, v in read_settings(path).items():
         os.environ.setdefault(k, v)
 
 
@@ -2937,9 +3004,12 @@ def setup_output():
 
 def main():
     global VENC
+    choose_home(sys.argv[1:])
     setup_output()
     fill_version()
     load_settings(CONF_FILE)
+    if HOME_FROM:  # settings in the one folder win; anything not set there comes from the usual file
+        load_settings(DEFAULT_CONF_FILE)
     ap = argparse.ArgumentParser(description="Homeflix - Netflix-style media server for your LAN")
     ap.add_argument("--videos", action="append", metavar="DIR",
                     help="video folder (repeatable). Default: ~/Downloads/movies")
@@ -2958,6 +3028,9 @@ def main():
                     help="commercial skipping: off (default), auto (find ad breaks in TV recordings: "
                          ".ts, .m2ts, .mpg) or all (every video) (or set HOMEFLIX_ADS)")
     ap.add_argument("--quiet", action="store_true", help="don't log every HTTP request")
+    ap.add_argument("--home", metavar="DIR",
+                    help="keep settings, data and cache together in this folder (or set HOMEFLIX_HOME)")
+    ap.add_argument("--where", action="store_true", help="show where Homeflix keeps its files, then exit")
     ap.add_argument("--version", action="version", version=f"Homeflix {VERSION}")
     a = ap.parse_args()
 
@@ -2968,6 +3041,11 @@ def main():
         for part in str(r).split(os.pathsep):  # ":" on Linux/macOS, ";" on Windows
             if part and part not in roots:
                 roots.append(part)
+    if a.where:
+        split = lambda xs: [p for x in xs for p in str(x).split(os.pathsep) if p]
+        return print_where(split(videos), split(music))
+    old_data = app_dirs()[1]  # with --home: profiles left behind in the usual data folder?
+    left_behind = HOME_FROM and not (XDG_DATA / "state.json").exists() and (old_data / "state.json").exists()
 
     XDG_DATA.mkdir(parents=True, exist_ok=True)
     secret_file = XDG_DATA / "secret.key"
@@ -2987,6 +3065,11 @@ def main():
     Handler.ads.busy = lambda: Handler.converting > 0
 
     log(f"Homeflix {VERSION} starting (Python {sys.version.split()[0]}, {sys.platform})")
+    if HOME_FROM:
+        log(f"Keeping settings, data and cache in one folder: {XDG_DATA} (set by {HOME_FROM})")
+    if left_behind:
+        log(f"NOTE: your profiles and watch history are in {old_data}. To keep them, stop Homeflix"
+            f" and copy the files from there into {XDG_DATA}")
     if not FFMPEG:
         log("WARNING: ffmpeg/ffprobe not found - no thumbnails, durations or transcoding. Install: sudo apt install ffmpeg")
     elif not VENC:

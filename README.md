@@ -232,7 +232,7 @@ Homeflix **never changes or adds anything in your movie and music folders**, use
 | **Data folder** | `~/.local/share/homeflix/` | `~/Library/Application Support/Homeflix/` | `%APPDATA%\Homeflix\` |
 | **Settings file** | `~/.config/homeflix/env` | `~/Library/Application Support/Homeflix/env` | `%APPDATA%\Homeflix\env` |
 
-**Finding these folders:**
+**Finding these folders:** run `homeflix --where`. It prints the exact folders on your computer, how big they are, and which media folders Homeflix reads.
 - **macOS:** the Library folder is hidden. In Finder, choose **Go → Go to Folder** (Cmd+Shift+G) and paste the path.
 - **Windows:** paste the path (for example `%APPDATA%\Homeflix`) into File Explorer's address bar.
 
@@ -260,6 +260,20 @@ When Homeflix scans your library, this is everything it keeps:
 **How much space:** about **1.4 MB for a library of about 150 videos and songs**, on any system. Thumbnails are most of it, so it grows a little as your library grows.
 
 **To store less:** run with `--no-thumbs` to skip thumbnails. The cache folder is safe to delete at any time (with Homeflix stopped is best); Homeflix rebuilds what it needs.
+
+#### Everything in one folder (optional)
+
+By default the cache is kept apart on purpose: backup tools skip it, and deleting it can never lose your profiles or watch history. If you'd rather have **one folder for everything** (to move Homeflix to a new computer, run it from a USB drive, or back it all up together), choose a folder in any of these ways:
+
+| How | Example |
+|---|---|
+| A line in your usual settings file (works for the `homeflix` command and the background service) | `HOMEFLIX_HOME="/media/usb/homeflix"` |
+| An environment variable | `HOMEFLIX_HOME=~/homeflix homeflix` |
+| A command-line option (for one run) | `homeflix --home ~/homeflix` |
+
+Then the settings file is `env` in that folder, the data files sit directly in it, and the cache goes in its `cache` subfolder. Settings in that `env` file win; anything not set there still comes from your usual settings file. `homeflix --where` shows what's in use.
+
+**Moving your profiles and watch history in:** stop Homeflix and copy the files from your data folder (above) into the new folder. Homeflix reminds you at startup if it finds them only in the old place. The cache doesn't need copying; it's rebuilt.
 
 ### Thumbnails and cache
 
