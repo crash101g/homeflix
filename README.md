@@ -221,26 +221,42 @@ A tool that serves files from your disk should be paranoid, so Homeflix is:
 
 ### What Homeflix stores on your computer
 
-Homeflix **never changes or adds anything in your movie and music folders**, uses no database, and sends nothing off your computer. When it scans your library, this is everything it keeps. The paths are for Linux; see the table above for macOS and Windows.
+Homeflix **never changes or adds anything in your movie and music folders**, uses no database, and sends nothing off your computer. Everything it keeps goes in three places of its own, in the usual spot for your system:
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| **Cache folder** (safe to delete) | `~/.cache/homeflix/` | `~/Library/Caches/Homeflix/` | `%LOCALAPPDATA%\Homeflix\Cache\` |
+| **Data folder** | `~/.local/share/homeflix/` | `~/Library/Application Support/Homeflix/` | `%APPDATA%\Homeflix\` |
+| **Settings file** | `~/.config/homeflix/env` | `~/Library/Application Support/Homeflix/env` | `%APPDATA%\Homeflix\env` |
+
+**Finding these folders:**
+- **macOS:** the Library folder is hidden. In Finder, choose **Go → Go to Folder** (Cmd+Shift+G) and paste the path.
+- **Windows:** paste the path (for example `%APPDATA%\Homeflix`) into File Explorer's address bar.
+
+When Homeflix scans your library, this is everything it keeps:
 
 | What | Where | Details |
 |---|---|---|
 | **Library index** | Memory only | The list of your videos, shows, albums and songs. Rebuilt from your folders every time Homeflix starts, and rescanned every 15 minutes. Nothing is saved for it. |
-| **File details** | `~/.cache/homeflix/probe.json` | Length, video/audio format and tags (title, artist, album) of each file, so starting up doesn't re-read every file. Re-read when a file changes. |
-| **Thumbnails** | `~/.cache/homeflix/thumbs/` | One picture per video and one cover per album, about 15 KB each. Not made for files that have their own picture (see below). |
-| **Extracted subtitles** | `~/.cache/homeflix/subs/` | Only when you turn on subtitles that are inside a video file (MKV) |
-| **Ad breaks found** | `~/.cache/homeflix/ads/` | Only if [ad skipping](#skips-the-commercials-in-tv-recordings-optional) is turned on |
-| **Profiles, watch progress, My List** | `~/.local/share/homeflix/state.json` | Created when you add profiles and watch things |
-| **Sign-in key** | `~/.local/share/homeflix/secret.key` | Created once on first start; keeps you signed in when a password is set |
-| **Parts marked "Not an ad"** | `~/.local/share/homeflix/not_ads.json` | Only if you use that button |
+| **File details** | Cache folder: `probe.json` | Length, video/audio format and tags (title, artist, album) of each file, so starting up doesn't re-read every file. Re-read when a file changes. |
+| **Thumbnails** | Cache folder: `thumbs` | One picture per video and one cover per album, about 15 KB each. Not made for files that have their own picture (see below). |
+| **Extracted subtitles** | Cache folder: `subs` | Only when you turn on subtitles that are inside a video file (MKV) |
+| **Ad breaks found** | Cache folder: `ads` | Only if [ad skipping](#skips-the-commercials-in-tv-recordings-optional) is turned on |
+| **Profiles, watch progress, My List** | Data folder: `state.json` | Created when you add profiles and watch things |
+| **Sign-in key** | Data folder: `secret.key` | Created once on first start; keeps you signed in when a password is set |
+| **Parts marked "Not an ad"** | Data folder: `not_ads.json` | Only if you use that button |
 
-**Nothing else:**
-- **Logs:** none saved. They're printed to the terminal. As a service, systemd keeps them (`journalctl`), and on Windows the background task writes `homeflix.log` in the data folder.
-- **Nothing in the folder you run Homeflix from.**
+**Logs:** when you start Homeflix yourself, the log is only printed in the terminal window and isn't saved. As a background service it's kept here:
 
-**How much space:** about **1.4 MB for a library of about 150 videos and songs**. Thumbnails are most of it, so it grows a little as your library grows.
+| Linux | macOS | Windows |
+|---|---|---|
+| The system journal: `journalctl --user -u homeflix` | `~/Library/Logs/Homeflix.log` | Data folder: `homeflix.log` |
 
-**To store less:** run with `--no-thumbs` to skip thumbnails. The cache folder is safe to delete at any time; Homeflix rebuilds what it needs.
+**Nothing is saved in the folder you run Homeflix from.**
+
+**How much space:** about **1.4 MB for a library of about 150 videos and songs**, on any system. Thumbnails are most of it, so it grows a little as your library grows.
+
+**To store less:** run with `--no-thumbs` to skip thumbnails. The cache folder is safe to delete at any time (with Homeflix stopped is best); Homeflix rebuilds what it needs.
 
 ### Thumbnails and cache
 
