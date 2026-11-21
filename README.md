@@ -219,6 +219,22 @@ A tool that serves files from your disk should be paranoid, so Homeflix is:
 | Parts you marked "Not an ad" | `~/.local/share/homeflix/not_ads.json` | `~/Library/Application Support/Homeflix/not_ads.json` | `%APPDATA%\Homeflix\not_ads.json` |
 | Thumbnails, probe cache, extracted subs, ad breaks found (safe to delete) | `~/.cache/homeflix/` | `~/Library/Caches/Homeflix/` | `%LOCALAPPDATA%\Homeflix\Cache\` |
 
+### Thumbnails and cache
+
+- **Your own artwork wins.** Put a picture next to the file and Homeflix uses it as is:
+  - videos: `Movie.jpg` or `Movie-poster.jpg` (same name as the video), or `poster.jpg` / `cover.jpg` / `folder.jpg` in the movie's or show's folder
+  - music: `cover.jpg`, `folder.jpg`, `front.jpg` or `album.jpg` in the album folder (any picture in the folder will do), or art embedded in the songs
+
+  `.jpg`, `.png` and `.webp` all work.
+- **Otherwise it makes one** with ffmpeg: a typical frame from about 12% into the video, or the song's embedded cover. They're made in the background after each library scan, at low priority, and take about 15 KB each.
+- **The cache tidies itself:**
+  - thumbnails, extracted subtitles and ad breaks of deleted, renamed or moved files are removed
+  - a file replaced under the same name gets a new thumbnail
+  - one that couldn't be made is tried again after a day
+
+  Nothing is removed while one of your library folders is missing (an unplugged drive or an offline NAS).
+- **Start fresh** by deleting the cache folder (see the table above) and restarting. To skip thumbnails altogether, use `--no-thumbs`.
+
 **Service commands** (only if you installed with `--service` / `--autostart`)
 
 | | Linux (systemd) | macOS (launchd) | Windows (Task Scheduler, in PowerShell) |

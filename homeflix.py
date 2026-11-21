@@ -52,7 +52,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.3.8"
+VERSION = "1.3.9"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -108,6 +108,8 @@ def find_tool(name):
         dirs = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin", "/usr/bin", "/snap/bin"]
     return shutil.which(name, path=os.pathsep.join(dirs))
 
+
+THUMB_RETRY_SECONDS = 24 * 3600  # a thumbnail that couldn't be made is tried again after this long
 
 FFMPEG = find_tool("ffmpeg")
 FFPROBE = find_tool("ffprobe")
@@ -311,6 +313,7 @@ class Library:
         finally:
             self.scanning = False
             self.scan_lock.release()
+        self._prune_cache()
         if self.make_thumbs:
             threading.Thread(target=self._pregen_thumbs, daemon=True).start()
 
@@ -519,24 +522,51 @@ class Library:
                 "transcode": bool(FFMPEG), "roots": [r.name for r in self.roots]}
 
     # -- thumbnails -------------------------------------------------------------
+    @staticmethod
+    def _fresh(path: Path, it, max_age=None) -> bool:
+        """A cache file made from this item that is still good: it exists, is newer than the file
+        (a file replaced under the same name gets a new one) and, with max_age, not older than that."""
+        try:
+            m = path.stat().st_mtime
+        except OSError:
+            return False
+        return m >= it["added"] and (max_age is None or time.time() - m < max_age)
+
+    def thumb_cached(self, it) -> bool:
+        """Nothing to do for this item's thumbnail: it has its own picture, a good cached one, or a
+        recent "couldn't make one" marker."""
+        if it.get("_img") and os.path.isfile(it["_img"]):
+            return True
+        return (self._fresh(self.thumb_dir / f"{it['id']}.jpg", it)
+                or self._fresh(self.thumb_dir / f"{it['id']}.none", it, THUMB_RETRY_SECONDS))
+
     def thumb(self, it):
         if it.get("_img") and os.path.isfile(it["_img"]):
             return it["_img"]
         out = self.thumb_dir / f"{it['id']}.jpg"
         miss = self.thumb_dir / f"{it['id']}.none"
-        if out.exists():
+        if self._fresh(out, it):
             return str(out)
-        if miss.exists() or not self.make_thumbs:
-            return None
+        # a thumbnail that couldn't be made is tried again after a day, or when the file changes
+        if self._fresh(miss, it, THUMB_RETRY_SECONDS) or not self.make_thumbs:
+            return str(out) if out.exists() else None
         lk = self.thumb_locks.setdefault(it["id"], threading.Lock())
         with lk:
-            if out.exists():
+            if self._fresh(out, it):
                 return str(out)
             with self.thumb_sem:
                 ok = self._gen_thumb(it, out)
         if not ok:
             miss.touch()
+            try:
+                out.unlink()  # an old picture of a file that has been replaced
+            except OSError:
+                pass
             return None
+        try:
+            miss.unlink()
+        except OSError:
+            pass
         return str(out)
 
     def _gen_thumb(self, it, out: Path):
@@ -568,6 +598,35 @@ class Library:
             pass
         return False
 
+    def _prune_cache(self):
+        """Delete cached thumbnails, extracted subtitles and ad breaks of files no longer in the
+        library (deleted, renamed or moved). Skipped while a library folder is missing (an unplugged
+        drive or a NAS that's offline), so its files' thumbnails aren't thrown away."""
+        missing = [str(r) for r in self.roots if not r.is_dir()]
+        if missing:
+            return
+        with self.lock:
+            ids = set(self.items)
+        if not ids:
+            return
+        removed = 0
+        for folder in (self.thumb_dir, self.sub_dir, XDG_CACHE / "ads"):
+            try:
+                files = list(folder.iterdir())
+            except OSError:
+                continue
+            for f in files:
+                # cache files are named after the item: <id>.jpg, <id>.none, <id>.tmp.jpg, <id>_<n>.vtt, <id>.json
+                iid = f.name.split(".")[0].split("_")[0]
+                if re.fullmatch(r"[0-9a-f]{14}", iid) and iid not in ids:
+                    try:
+                        f.unlink()
+                        removed += 1
+                    except OSError:
+                        pass
+        if removed:
+            log(f"Cache: removed {removed} file(s) left from videos and songs that are gone")
+
     def _pregen_thumbs(self):
         with self.lock:
             items = list(self.items.values())
@@ -583,8 +642,7 @@ class Library:
             todo.append(it)
         n = 0
         for it in todo:
-            if not (self.thumb_dir / f"{it['id']}.jpg").exists():
-                self.thumb(it)
+            if not self.thumb_cached(it) and self.thumb(it):
                 n += 1
         if n:
             log(f"Generated {n} thumbnail(s)")
@@ -607,7 +665,7 @@ class Library:
             vtt = srt_to_vtt(text) if not text.lstrip().startswith("WEBVTT") else text
         else:
             cache = self.sub_dir / f"{it['id']}_{n}.vtt"
-            if not cache.exists():
+            if not self._fresh(cache, it):
                 if not FFMPEG:
                     return None
                 r = subprocess.run([FFMPEG, "-nostdin", "-v", "error", "-i", it["_path"], "-map", f"0:s:{n}",
@@ -2418,7 +2476,7 @@ const isNew=it=>Date.now()/1000-it.added<14*86400;
 function meta(...k){return h('div',{class:'meta'},k.flat().filter(x=>x!=null&&x!==''&&x!==false).map(x=>x.nodeType?x:h('span',{},x)))}
 function art(id,title,sq,badge){const w=h('div',{class:'art'+(sq?' sq':''),style:'background:'+grad(title)},h('span',{class:'ph'},title));
   if(badge)w.append(h('span',{class:'badge'},badge));
-  if(id){const i=h('img',{loading:'lazy',alt:'',src:'/thumb/'+id});i.onload=()=>w.classList.add('loaded');i.onerror=()=>i.remove();w.append(i)}return w}
+  if(id){const it=S.byId[id],i=h('img',{loading:'lazy',alt:'',src:'/thumb/'+id+(it?'?v='+it.added:'')});i.onload=()=>w.classList.add('loaded');i.onerror=()=>i.remove();w.append(i)}return w}
 
 /* ---------- data ---------- */
 function group(){
