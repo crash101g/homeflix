@@ -81,7 +81,7 @@ It's one file and uses nothing outside the Python standard library. You can read
 - On phones the music bar has **big previous / play / next buttons**, a **Big player** button, and a slider along its top edge: **tap anywhere on it to jump** to that part of the song, or drag.
 - A **Now Playing** screen with big, easy-to-hit buttons for phones: tap **Big player** (or the song) to open it. **Previous / Next** sit up top, then a progress bar you can tap or drag anywhere, then **back 15 s · play · forward 15 s** (double-tap to skip 30 s). It keeps the screen on while it's open, and works sideways in a car mount.
 
-<p align="center"><img src="docs/screenshots/music.png" alt="Album view with the track list, the current track highlighted, and the music player bar at the bottom" width="100%"></p>
+<p align="center"><img src="docs/screenshots/music.png" alt="The Music page on a computer: a row of album covers, and the music bar at the bottom with a red progress bar, big shuffle, previous, pause, next and repeat buttons, a Big player button, volume and close" width="100%"></p>
 
 ### Skips the commercials in TV recordings (optional)
 - **Off until you turn it on**, so a library of movies never sees an ad button. Turn it on by adding this line to your settings file (see [Where things live](#-where-things-live)) and restarting Homeflix:
