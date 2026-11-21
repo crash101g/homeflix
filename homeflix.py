@@ -54,7 +54,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -2572,7 +2572,7 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
 #mprog,#mptimes{display:none}
 /* Phones and tablets: the music bar in two rows. Song + "Big player" on top, big previous / play / next
    below, and a thin progress line along the top edge */
-#mbar.touch{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"prog prog" "times times" "now open" "ctl ctl";height:auto;gap:0;
+#mbar.touch{display:grid;grid-template-columns:minmax(0,1fr) auto auto;grid-template-areas:"prog prog prog" "times times times" "now open stop" "ctl ctl ctl";height:auto;gap:0;
   padding:0 0 max(14px,env(safe-area-inset-bottom));align-items:center}
 /* the top edge is a slider: tap anywhere to jump there, or drag (the knob grows under your finger) */
 #mbar.touch #mprog{display:flex;grid-area:prog;height:40px;margin-top:-20px;padding:0 12px;align-items:center;touch-action:none;cursor:pointer}
@@ -2587,6 +2587,13 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
 #mbar.touch #mexpand{grid-area:open;font-size:15px!important;font-weight:700;height:52px;padding:0 16px;margin:12px 14px 4px 0;border-radius:26px;
   background:#ffffff1f;display:flex;align-items:center;gap:6px;color:#fff;border:0;white-space:nowrap;cursor:pointer;margin-top:4px}
 #mbar.touch #mexpand svg{width:22px;height:22px}
+/* stop the music: the bar goes away and doesn't come back next time (like the close button on computers) */
+#mbar.touch #mclose{grid-area:stop;width:44px;height:44px;margin:4px 12px 4px -6px;border-radius:50%;background:#ffffff1a;border:0;color:#ddd;
+  display:grid;place-items:center;padding:0;cursor:pointer;-webkit-tap-highlight-color:transparent}
+#mbar.touch #mclose:active{background:#ffffff33}
+#mbar.touch #mclose svg{width:24px;height:24px;fill:currentColor}
+/* small phones: Big player as just its arrow, so the song title keeps some room */
+@media (max-width:380px){#mbar.touch #mexpand{font-size:0!important;width:52px;padding:0;justify-content:center;border-radius:50%}#mbar.touch #mexpand svg{width:28px;height:28px}}
 #mbar.touch .mctr{grid-area:ctl;padding-top:6px}
 #mbar.touch .mseek,#mbar.touch #mshuf,#mbar.touch #mrep,#mbar.touch .mright{display:none}
 #mbar.touch .mbtns{gap:34px}
@@ -3207,6 +3214,8 @@ function mMuteIcon(){$('#mmute').innerHTML=aud.muted?VI.mute:VI.vol;$('#mmute').
 const mVolShow=()=>$('#mvol').style.setProperty('--pct',aud.volume*100+'%');
 if(TOUCH){const mb=$('#mbar');mb.classList.add('touch');document.body.classList.add('touchbar');
   mb.insertBefore($('#mexpand'),mb.querySelector('.mctr'));$('#mexpand').innerHTML=ICON.up+'Big player';
+  mb.insertBefore($('#mclose'),mb.querySelector('.mctr'));$('#mclose').innerHTML=ICON.close;$('#mclose').title='Stop music';
+  $('#mclose').setAttribute('aria-label','Stop music');
   $('#mprev').innerHTML=ICON.prev;$('#mnext').innerHTML=ICON.next;mPlayIcon();
   // the slider along the top edge: tap anywhere to jump there, or drag
   const pr=$('#mprog'),fr=e=>{const r=pr.querySelector('.mptrk').getBoundingClientRect();return Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))};
