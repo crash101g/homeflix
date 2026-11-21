@@ -52,7 +52,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.3.9"
+VERSION = "1.4.0"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -2202,7 +2202,8 @@ body.mplay .scanning{bottom:96px}
 .pbot{bottom:0;padding:10px 24px 18px;background:linear-gradient(#0000,#000c)}
 .seekrow{display:flex;align-items:center;gap:14px;font-size:14px}
 input[type=range]{accent-color:var(--red);cursor:pointer}
-#pseek{flex:1;width:100%}
+#pseek{flex:1;width:100%}#pvol{width:90px}
+.pvolw{display:flex;align-items:center;gap:18px}
 .seekwrap{flex:1;position:relative;display:flex;align-items:center}
 #padbar{position:absolute;left:0;right:0;top:calc(50% + 4px);height:4px;pointer-events:none}
 #padbar i{position:absolute;top:0;bottom:0;background:#f5c518;border-radius:2px;opacity:.9}
@@ -2244,6 +2245,47 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
 #player.touch .pctl button{width:56px;height:56px;min-width:56px;display:grid;place-items:center;border-radius:50%}
 #player.touch .pctl button svg{width:32px;height:32px;fill:currentColor}
 #player.touch #pskip{top:76px;bottom:auto;right:16px}
+#psubbtn{display:none}
+/* Computers: big TV-style controls. Title above a thick bar, then a row of large round buttons; the one
+   under the mouse (or keyboard focus) turns white and shows its name, like the selected button on a TV */
+#player.desk .ptop{padding:36px 48px;background:linear-gradient(#000c,#0000)}
+#player.desk #pback{width:64px;height:64px;border-radius:50%;display:grid;place-items:center;color:#fff;cursor:pointer}
+#player.desk #pback svg{width:40px;height:40px;fill:currentColor}
+#player.desk #pads{font-size:16px;padding:8px 14px;cursor:pointer;color:#ddd;background:none}
+#player.desk .pbot{padding:120px 72px 34px;background:linear-gradient(#0000,#000e 60%)}
+#player.desk #ptitle{margin-bottom:22px}
+#player.desk #ptitle b{display:block;font-size:40px;font-weight:800}
+#player.desk #ptitle small{display:block;margin:4px 0 0;font-size:24px;color:#ccc}
+#player.desk .seekrow{gap:24px;font-size:24px;font-variant-numeric:tabular-nums}
+#player.desk .seekwrap{height:32px}
+#player.desk #pseek{-webkit-appearance:none;appearance:none;height:8px;border-radius:4px;background:linear-gradient(to right,var(--red) var(--pct,0%),#ffffff4d var(--pct,0%))}
+#player.desk #pseek::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;border-radius:50%;background:var(--red);border:0;box-shadow:0 2px 8px #000a}
+#player.desk #pseek::-moz-range-thumb{width:24px;height:24px;border-radius:50%;background:var(--red);border:0}
+#player.desk #padbar{top:50%;height:8px;margin-top:-4px}
+#player.desk .pctl{margin-top:24px;gap:20px;align-items:flex-start;padding-bottom:28px}
+#player.desk .pctl .sp{align-self:center}
+#player.desk .pctl button{position:relative;width:76px;height:76px;min-width:76px;padding:0;border-radius:50%;display:grid;place-items:center;color:#fff;cursor:pointer}
+#player.desk .pctl button svg{width:50px;height:50px;fill:currentColor}
+#player.desk .pctl button::after{content:attr(data-l);position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);white-space:nowrap;font-size:15px;font-weight:700;color:#fff;opacity:0;pointer-events:none}
+#player.desk .pctl button:hover,#player.desk .pctl button:focus-visible,#player.desk #psubw:hover #psubbtn,#player.desk #psubs:focus-visible+#psubbtn{background:#fff;color:#000;outline:0}
+#player.desk .pctl button:hover::after,#player.desk .pctl button:focus-visible::after,#player.desk #psubw:hover #psubbtn::after,#player.desk #psubs:focus-visible+#psubbtn::after{opacity:1}
+#player.desk .sk{position:relative;display:block;width:50px;height:50px}
+#player.desk .sk b{position:absolute;inset:0;display:grid;place-items:center;font-size:15px;font-weight:800;padding-top:6px}
+#player.desk .pvolw{display:flex;align-items:center;gap:14px;height:76px}
+#player.desk #pvol{width:0;opacity:0;transition:width .2s,opacity .2s}
+#player.desk .pvolw:hover #pvol,#player.desk #pvol:focus-visible{width:130px;opacity:1}
+#player.desk #pmode{align-self:center;color:#bbb}
+#player.desk #psubw{position:relative}
+#player.desk #psubbtn{display:grid}
+#player.desk #psubs{position:absolute;left:0;top:0;width:76px;height:76px;opacity:0;cursor:pointer;z-index:1}
+#player.desk #pskip{bottom:360px;right:72px}
+#player.desk #pskip button{font-size:20px;padding:14px 24px}#player.desk #pskip #pnotad{font-size:16px;padding:12px 16px}
+#player.desk #pmsg{font-size:22px;padding:18px 28px}
+@media (max-width:900px),(max-height:600px){#player.desk .pbot{padding:80px 28px 18px}#player.desk .ptop{padding:20px 24px}
+  #player.desk #ptitle b{font-size:28px}#player.desk #ptitle small{font-size:18px}#player.desk .seekrow{font-size:18px}
+  #player.desk .pctl{gap:8px;margin-top:14px}#player.desk .pctl button,#player.desk #psubs{width:56px;height:56px;min-width:56px}
+  #player.desk .pctl button svg,#player.desk .sk{width:36px;height:36px}#player.desk .sk b{font-size:11px;padding-top:4px}
+  #player.desk .pvolw{height:56px}#player.desk #pskip{bottom:240px;right:28px}}
 #pmsg{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:#000c;padding:14px 22px;border-radius:6px;z-index:3;font-size:16px;pointer-events:none}
 .spinner{width:52px;height:52px;border:5px solid #fff3;border-top-color:var(--red);border-radius:50%;animation:sp 1s linear infinite;position:absolute;left:50%;top:50%;margin:-26px;z-index:1;pointer-events:none}
 @keyframes sp{to{transform:rotate(360deg)}}
@@ -2406,11 +2448,11 @@ body.mplay.touchbar .scanning{bottom:200px}
       <button id="pplay" title="Play/Pause (Space)">&#10074;&#10074;</button>
       <button id="prew" title="Back 10s (&larr;)">&#8634;</button>
       <button id="pfwd" title="Forward 10s (&rarr;)">&#8635;</button>
-      <button id="pmute" title="Mute (M)">&#128266;</button>
-      <input type="range" id="pvol" min="0" max="1" step="0.05" value="1" style="width:90px">
+      <div class="pvolw"><button id="pmute" title="Mute (M)">&#128266;</button>
+      <input type="range" id="pvol" min="0" max="1" step="0.05" value="1" aria-label="Volume"></div>
       <span class="sp"></span>
       <span id="pmode" class="small"></span>
-      <select id="psubs" title="Subtitles"></select>
+      <div id="psubw"><select id="psubs" title="Subtitles"></select><button id="psubbtn" tabindex="-1" aria-hidden="true" data-l="Subtitles"></button></div>
       <button id="pnext" title="Next episode (N)" class="hidden">&#9197;</button>
       <button id="pfs" title="Full screen (F)">&#9974;</button>
     </div>
@@ -2604,7 +2646,7 @@ const vid=$('#vid'),P={it:null,mode:'direct',off:0,dur:0,pending:0,sub:-1,lastSa
 function playVideo(it,start){stopMusic(true);closeModal();P.it=it;P.dur=it.duration||0;P.mode=(it.direct||!S.transcode)?'direct':'tx';P.hevc=hevcPass(it);P.sub=-1;
   const p=prog(it.id);if(start==null)start=p&&!p.done&&p.pos>20?Math.max(0,p.pos-5):0;
   $('#ptitle').replaceChildren(it.show?h('span',{},h('b',{},it.show),h('small',{},`S${it.season}:E${it.episode} ${it.epTitle||''}`)):h('b',{},it.title));
-  const subs=$('#psubs');subs.replaceChildren(h('option',{value:-1},'Subtitles: Off'),...(it.subs||[]).map((l,i)=>h('option',{value:i},l)));subs.classList.toggle('hidden',!(it.subs||[]).length);
+  const subs=$('#psubs');subs.replaceChildren(h('option',{value:-1},'Subtitles: Off'),...(it.subs||[]).map((l,i)=>h('option',{value:i},l)));$('#psubw').classList.toggle('hidden',!(it.subs||[]).length);
   $('#pnext').classList.toggle('hidden',!nextEp(it));
   $('#player').classList.remove('hidden');document.body.classList.add('noscroll');
   if(document.fullscreenEnabled&&!document.fullscreenElement&&matchMedia('(pointer:coarse)').matches)$('#player').requestFullscreen().catch(()=>{});
@@ -2632,7 +2674,7 @@ vid.addEventListener('error',()=>{if(!P.it||!vid.getAttribute('src'))return;spin
   if(P.mode==='direct'&&S.transcode){const t=cur();P.mode='tx';msg('Converting this file for your browser…');loadVid(t)}
   else if(P.mode==='tx'&&P.hevc)hevcFail()
   else msg(S.transcode?'Sorry, this file could not be played.':'Your browser cannot play this format and ffmpeg is not installed on the server.',6000)});
-vid.addEventListener('timeupdate',()=>{const t=cur();adTick(t);if(!P.drag&&P.dur)seekShow(t);$('#ptime').textContent=fmtT(t)+' / '+fmtT(P.dur);$('#ptdur').textContent=fmtT(P.dur);if(Date.now()-P.lastSave>10000)saveProg()});
+vid.addEventListener('timeupdate',()=>{const t=cur();adTick(t);if(!P.drag&&P.dur)seekShow(t);ptimeShow(t);$('#ptdur').textContent=fmtT(P.dur);if(Date.now()-P.lastSave>10000)saveProg()});
 vid.addEventListener('ended',async()=>{if(P.mode==='tx'&&P.dur&&cur()<P.dur-30){return}await saveProg(true,true);const n=nextEp(P.it);if(n){msg('Next episode…');playVideo(n,0)}else closePlayer()});
 async function saveProg(force,done){if(!P.it)return;P.lastSave=Date.now();const t=cur();if(!force&&t<5)return;const body={profile:S.profile.id,id:P.it.id,pos:t,dur:P.dur};if(done)body.done=true;
   S.progress[P.it.id]={pos:t,dur:P.dur,done:done||(P.dur&&t>=P.dur*.93),updated:Date.now()/1000};try{await post('/api/progress',body)}catch(e){}}
@@ -2647,10 +2689,13 @@ const VI={play:'<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',pause:
   vol:'<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg>',
   mute:'<svg viewBox="0 0 24 24"><path d="M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.5 2.5zM19 12a7 7 0 0 1-.6 2.8l1.5 1.5A9 9 0 0 0 14 3.2v2.1a7 7 0 0 1 5 6.7zM4.3 3 3 4.3 7.7 9H3v6h4l5 5v-6.7l4.3 4.2a7 7 0 0 1-2.3 1.2v2.1a9 9 0 0 0 3.7-1.8l2 2 1.3-1.3zM12 4 9.9 6.1 12 8.2z"/></svg>',
   fs:'<svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7zm-2-4h2V7h3V5H5zm12 7h-3v2h5v-5h-2zM14 5v2h3v3h2V5z"/></svg>',
-  next:'<svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg>'};
-function playIcon(){$('#pplay').innerHTML=vid.paused?(TOUCH?VI.play:'&#9654;'):(TOUCH?VI.pause:'&#10074;&#10074;')}
-function muteIcon(){$('#pmute').innerHTML=TOUCH?(vid.muted?VI.mute:VI.vol):(vid.muted?'&#128263;':'&#128266;')}
+  next:'<svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg>',
+  subs:'<svg viewBox="0 0 24 24"><path d="M20 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zM4 12h4v2H4zm10 6H4v-2h10zm6 0h-4v-2h4zm0-4H10v-2h10z"/></svg>',
+  back:'<svg viewBox="0 0 24 24"><path d="M20 11H7.8l5.6-5.6L12 4l-8 8 8 8 1.4-1.4L7.8 13H20z"/></svg>'};
+function playIcon(){$('#pplay').innerHTML=vid.paused?VI.play:VI.pause;$('#pplay').dataset.l=vid.paused?'Play':'Pause'}
+function muteIcon(){$('#pmute').innerHTML=vid.muted?VI.mute:VI.vol;$('#pmute').dataset.l=vid.muted?'Unmute':'Mute'}
 // the slider's position (and, on phones, the red part of the bar and the time under it)
+function ptimeShow(t){$('#ptime').textContent=TOUCH?fmtT(t)+' / '+fmtT(P.dur):fmtT(Math.max(0,P.dur-t))}
 function seekShow(t){if(!P.dur)return;const f=Math.max(0,Math.min(1,t/P.dur));$('#pseek').value=f*1000;$('#pseek').style.setProperty('--pct',f*100+'%');$('#ptcur').textContent=fmtT(t)}
 if(TOUCH){$('#player').classList.add('touch');$('#pcenter').append($('#prew'),$('#pplay'),$('#pfwd'));
   for(const b of ['#prew','#pplay','#pfwd'])$(b).classList.add('pcbtn');
@@ -2665,11 +2710,16 @@ if(TOUCH){$('#player').classList.add('touch');$('#pcenter').append($('#prew'),$(
   sw.addEventListener('pointermove',e=>{if(drag)show(e)});
   sw.addEventListener('pointerup',e=>{if(!drag)return;drag=false;P.drag=false;seekTo(fr(e)*P.dur)});
   sw.addEventListener('pointercancel',()=>{drag=false;P.drag=false})}
-else{vid.onclick=togglePlay;vid.ondblclick=()=>toggleFs()}
+else{vid.onclick=togglePlay;vid.ondblclick=()=>toggleFs();
+  // computers: the big TV-style layout (title above the bar, a row of large buttons with names)
+  $('#player').classList.add('desk');$('.pbot').prepend($('#ptitle'));$('#pback').innerHTML=VI.back;
+  $('#prew').innerHTML='<span class="sk">'+VI.rew+'<b>10</b></span>';$('#pfwd').innerHTML='<span class="sk">'+VI.fwd+'<b>10</b></span>';
+  $('#prew').dataset.l='Back 10s';$('#pfwd').dataset.l='Forward 10s';$('#pnext').dataset.l='Next Episode';$('#pfs').dataset.l='Full screen';
+  $('#pfs').innerHTML=VI.fs;$('#pnext').innerHTML=VI.next;$('#psubbtn').innerHTML=VI.subs;muteIcon();playIcon()}
 $('#pplay').onclick=togglePlay;
 $('#prew').onclick=()=>seekTo(cur()-SKIP);$('#pfwd').onclick=()=>seekTo(cur()+SKIP);
 $('#pback').onclick=closePlayer;$('#pnext').onclick=()=>{saveProg(true,true);const n=nextEp(P.it);if(n)playVideo(n,0)};
-$('#pseek').oninput=e=>{P.drag=true;$('#ptime').textContent=fmtT(e.target.value/1000*P.dur)+' / '+fmtT(P.dur)};
+$('#pseek').oninput=e=>{P.drag=true;const f=e.target.value/1000;e.target.style.setProperty('--pct',f*100+'%');ptimeShow(f*P.dur)};
 $('#pseek').onchange=e=>{P.drag=false;seekTo(e.target.value/1000*P.dur)};
 $('#pvol').oninput=e=>{vid.volume=e.target.value;vid.muted=false;localStorage.hf_vol=vid.volume};
 $('#pmute').onclick=()=>{vid.muted=!vid.muted;muteIcon()};
@@ -2683,7 +2733,8 @@ function toggleFs(){const d=document,el=$('#player');
   if(vid.webkitEnterFullscreen){try{vid.webkitEnterFullscreen()}catch(e){msg('Full screen works once the video has started')}return}
   msg('This browser does not allow full screen')}
 $('#pfs').onclick=toggleFs;
-function poke(){const p=$('#player');p.classList.remove('idle');clearTimeout(P.idleT);P.idleT=setTimeout(()=>{if(!vid.paused)p.classList.add('idle')},3000)}
+// hide the controls after 3 s of no mouse movement (computers: not while the mouse rests on them)
+function poke(){const p=$('#player');p.classList.remove('idle');clearTimeout(P.idleT);P.idleT=setTimeout(()=>{if(vid.paused)return;if(!TOUCH&&p.querySelector('.pov:hover'))return poke();p.classList.add('idle')},3000)}
 $('#player').addEventListener('mousemove',poke);
 // Phones: a tap while the controls are hidden only brings them back. Without this, the controls appear
 // under the finger before the tap finishes, and the same tap would press whatever button is there
