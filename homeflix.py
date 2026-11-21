@@ -52,7 +52,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -2261,7 +2261,7 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
 #player.desk #pseek{-webkit-appearance:none;appearance:none;height:8px;border-radius:4px;background:linear-gradient(to right,var(--red) var(--pct,0%),#ffffff4d var(--pct,0%))}
 #player.desk #pseek::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;border-radius:50%;background:var(--red);border:0;box-shadow:0 2px 8px #000a}
 #player.desk #pseek::-moz-range-thumb{width:24px;height:24px;border-radius:50%;background:var(--red);border:0}
-#player.desk #padbar{top:50%;height:8px;margin-top:-4px}
+#player.desk #padbar{top:calc(50% + 8px);height:4px}
 #player.desk .pctl{margin-top:24px;gap:20px;align-items:flex-start;padding-bottom:28px}
 #player.desk .pctl .sp{align-self:center}
 #player.desk .pctl button{position:relative;width:76px;height:76px;min-width:76px;padding:0;border-radius:50%;display:grid;place-items:center;color:#fff;cursor:pointer}
@@ -2278,7 +2278,7 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
 #player.desk #psubw{position:relative}
 #player.desk #psubbtn{display:grid}
 #player.desk #psubs{position:absolute;left:0;top:0;width:76px;height:76px;opacity:0;cursor:pointer;z-index:1}
-#player.desk #pskip{bottom:360px;right:72px}
+#player.desk #pskip{bottom:320px;right:72px}
 #player.desk #pskip button{font-size:20px;padding:14px 24px}#player.desk #pskip #pnotad{font-size:16px;padding:12px 16px}
 #player.desk #pmsg{font-size:22px;padding:18px 28px}
 @media (max-width:900px),(max-height:600px){#player.desk .pbot{padding:80px 28px 18px}#player.desk .ptop{padding:20px 24px}
