@@ -98,7 +98,7 @@ It's one file and uses nothing outside the Python standard library. You can read
 - The detector is from [TabloView](https://github.com/JoeDV/TabloView) by JoeDV.
 
 <p align="center">
-  <img src="docs/screenshots/ad-skip.jpg" alt="Homeflix player during an ad break: yellow ad-break marks under the seek bar, Skip Ad and Not an ad buttons in the corner, and an Ads: ask toggle at the top right" width="100%">
+  <img src="docs/screenshots/ad-skip.jpg" alt="Homeflix player on a computer during an ad break: yellow ad-break marks under the seek bar, Skip Ad and Not an ad buttons above the controls, and an Ads: ask toggle at the top right" width="100%">
   <br><sub>An ad break: the yellow marks under the seek bar show where every break is, and <b>Skip Ad</b> jumps to the end of this one.</sub>
 </p>
 
