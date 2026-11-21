@@ -54,7 +54,7 @@ It's one file and uses nothing outside the Python standard library. You can read
 
   <p align="center"><img src="docs/screenshots/profiles.png" alt="Who's watching? profile picker with four profiles and an Add Profile button" width="70%"></p>
 
-- **A home screen worth scrolling.** Hero banner, **Continue Watching**, My List, Recently Added, TV Shows, Movies, New Music and genre rows.
+- **A home screen worth scrolling.** Hero banner, **Continue Watching**, My List, Recently Added, Shows, Movies, New Music and genre rows.
 - **Instant search.** Press `/` and type. It searches titles, shows, artists and albums.
 
 ### TV shows that just work
