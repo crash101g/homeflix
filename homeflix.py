@@ -52,7 +52,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -2407,6 +2407,44 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
 #mbar.touch .mbtns .pp svg{width:48px;height:48px}
 body.mplay.touchbar main{padding-bottom:230px}
 body.mplay.touchbar .scanning{bottom:200px}
+/* Computers: a bigger, TV-style music bar. A thick red bar across the top with the times at its ends,
+   then the song, big round buttons, and Big player / volume / close. The button under the mouse (or
+   keyboard focus) turns white and shows its name above it */
+#mbar.desk{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);grid-template-areas:"seek seek seek" "now ctl right";
+  height:auto;gap:0 24px;padding:4px 32px 12px;align-items:center;background:#141414f7;border-top:1px solid #2a2a2a}
+#mbar.desk .mseek{grid-area:seek;display:flex;gap:18px;height:40px;font-size:16px;color:#ccc;font-variant-numeric:tabular-nums}
+#mbar.desk #mseek{-webkit-appearance:none;appearance:none;height:8px;border-radius:4px;background:linear-gradient(to right,var(--red) var(--pct,0%),#ffffff4d var(--pct,0%))}
+#mbar.desk #mseek::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;background:var(--red);border:0;box-shadow:0 2px 8px #000a}
+#mbar.desk #mseek::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:var(--red);border:0}
+#mbar.desk .now{grid-area:now;gap:16px}
+#mbar.desk .now .art{width:72px;flex:0 0 72px;border-radius:6px}
+#mbar.desk .tt b{font-size:22px}#mbar.desk .tt span{font-size:16px;color:#bbb;margin-top:4px}
+#mbar.desk .mctr{grid-area:ctl}
+#mbar.desk .mbtns{gap:18px}
+#mbar.desk .mbtns button,#mbar.desk .mright button{position:relative;display:grid;place-items:center;width:64px;height:64px;min-width:64px;padding:0;border-radius:50%;background:none;color:#fff;opacity:1;border:0;cursor:pointer}
+#mbar.desk .mbtns svg{width:38px;height:38px;fill:currentColor}
+#mbar.desk .mbtns .pp{width:72px;height:72px;border:3px solid #fff}#mbar.desk .mbtns .pp svg{width:42px;height:42px}
+#mbar.desk .mright{grid-area:right;display:flex;justify-content:flex-end;align-items:center;gap:14px}
+#mbar.desk .mright button{width:56px;height:56px;min-width:56px}#mbar.desk .mright svg{width:30px;height:30px;fill:currentColor}
+#mbar.desk #mexpand{display:flex;align-items:center;gap:10px;width:auto;margin:0 auto;height:52px;padding:0 22px 0 16px;border-radius:26px;background:#ffffff1f;font-size:18px!important;font-weight:600;white-space:nowrap}
+#mbar.desk #mexpand svg{width:24px;height:24px}
+#mbar.desk button:hover,#mbar.desk button:focus-visible{background:#fff!important;color:#000!important;outline:0}
+#mbar.desk button[data-l]::after{content:attr(data-l);position:absolute;bottom:calc(100% + 10px);left:50%;transform:translateX(-50%);white-space:nowrap;
+  font-size:15px;font-weight:700;color:#fff;background:#000d;border:1px solid #fff3;padding:6px 12px;border-radius:6px;opacity:0;pointer-events:none}
+#mbar.desk button[data-l]:hover::after,#mbar.desk button[data-l]:focus-visible::after{opacity:1}
+/* shuffle and repeat when on: red, with a dot under them */
+#mbar.desk .mbtns button.on{color:var(--red)}
+#mbar.desk .mbtns button.on::before{content:"";position:absolute;bottom:5px;left:50%;width:6px;height:6px;margin-left:-3px;border-radius:50%;background:var(--red)}
+#mbar.desk #mvol{-webkit-appearance:none;appearance:none;width:120px;height:6px;border-radius:3px;background:linear-gradient(to right,var(--red) var(--pct,100%),#ffffff4d var(--pct,100%))}
+#mbar.desk #mvol::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:var(--red);border:0}
+#mbar.desk #mvol::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:var(--red);border:0}
+body.mplay.deskbar main{padding-bottom:150px}
+body.mplay.deskbar .scanning{bottom:156px}
+/* narrower windows: drop the volume slider and the words on Big player, then shuffle/repeat and the album name */
+@media (max-width:1100px){#mbar.desk .mbtns{gap:6px}#mbar.desk #mvol{display:none}#mbar.desk #mexpand{font-size:0!important;width:56px;padding:0;justify-content:center;border-radius:50%}#mbar.desk #mexpand svg{width:34px;height:34px}}
+@media (max-width:800px){#mbar.desk{padding:4px 14px 10px;gap:0 10px}#mbar.desk .mright,#mbar.desk .mseek{display:flex}#mbar.desk #mshuf,#mbar.desk #mrep{display:none}
+  #mbar.desk .mbtns{gap:6px}#mbar.desk .mbtns button{width:56px;height:56px;min-width:56px}#mbar.desk .mbtns .pp{width:64px;height:64px}
+  #mbar.desk .mright{gap:4px}#mbar.desk .tt b{font-size:17px}#mbar.desk .tt span{font-size:13px}#mbar.desk .now .art{width:56px;flex-basis:56px}}
 /* Now Playing: big controls, made for phones (and the car) */
 #mfull{position:fixed;inset:0;z-index:70;background:linear-gradient(#2b2b2b,#090909 70%);display:flex;flex-direction:column;align-items:center;gap:12px;
   padding:max(10px,env(safe-area-inset-top)) 20px max(18px,env(safe-area-inset-bottom));touch-action:manipulation;-webkit-user-select:none;user-select:none;overflow:hidden}
@@ -2498,7 +2536,7 @@ body.mplay.touchbar .scanning{bottom:200px}
   <button id="menuBtn" class="iconbtn" style="display:none" aria-label="Menu">&#9776;</button>
   <div class="logo" data-go="home" title="Homeflix __VERSION__">HOMEFLIX<span class="ver">v__VERSION__</span></div>
   <nav id="links">
-    <a data-go="home">Home</a><a data-go="shows">TV Shows</a><a data-go="movies">Movies</a>
+    <a data-go="home">Home</a><a data-go="shows">Shows</a><a data-go="movies">Movies</a>
     <a data-go="music">Music</a><a data-go="recent">New &amp; Popular</a><a data-go="mylist">My List</a>
   </nav>
   <div class="navr">
@@ -2551,7 +2589,7 @@ body.mplay.touchbar .scanning{bottom:200px}
     </div>
     <div class="mseek"><span id="mcur">0:00</span><input type="range" id="mseek" min="0" max="1000" value="0"><span id="mdur">0:00</span></div>
   </div>
-  <div class="mright"><span>&#128264;</span><input type="range" id="mvol" min="0" max="1" step="0.05" value="1"><button id="mclose" title="Close">&#10005;</button></div>
+  <div class="mright"><button id="mmute" title="Mute">&#128264;</button><input type="range" id="mvol" aria-label="Volume" min="0" max="1" step="0.05" value="1"><button id="mclose" title="Close">&#10005;</button></div>
   <audio id="aud" preload="auto"></audio>
 </div>
 
@@ -2660,7 +2698,7 @@ function hero(m){const pool=[...S.movies,...S.shows.map(s=>s.eps[0])];if(!pool.l
 function viewHome(m){const hasHero=hero(m);const w=h('div',{class:hasHero?'rows':'rows page'});
   const genres={};for(const a of S.albums)if(a.genre)(genres[a.genre]??=[]).push(a);
   w.append(...[row(`Continue Watching for ${S.profile.name}`,continueList().map(itemCard)),row('My List',S.mylist.map(keyCard)),
-    row('Recently Added',recentVideos()),row('TV Shows',S.shows.map(showCard)),row('Movies',S.movies.map(itemCard)),
+    row('Recently Added',recentVideos()),row('Shows',S.shows.map(showCard)),row('Movies',S.movies.map(itemCard)),
     row('New Music',[...S.albums].sort((a,b)=>b.added-a.added).slice(0,30).map(albumCard)),
     ...Object.entries(genres).filter(([,l])=>l.length>2).slice(0,6).map(([g,l])=>row(g,l.map(albumCard))),
     S.albums.length>30?row('All Albums',S.albums.map(albumCard)):null].filter(Boolean));m.append(w)}
@@ -2668,7 +2706,7 @@ function sortSel(cur,opts,cb){const s=h('select',{class:'sel'},opts.map(([v,l])=
 function viewMovies(m){S.msort??='az';const list=[...S.movies];if(S.msort==='new')list.sort((a,b)=>b.added-a.added);if(S.msort==='year')list.sort((a,b)=>(b.year||0)-(a.year||0));
   m.append(h('div',{class:'page'},h('div',{class:'ptitle'},h('h1',{},'Movies'),sortSel(S.msort,[['az','A–Z'],['new','Recently Added'],['year','Release Year']],v=>{S.msort=v;render()}),h('span',{class:'small'},`${list.length} titles`)),
    list.length?h('div',{class:'grid'},list.map(itemCard)):h('div',{class:'empty'},'No movies found.')))}
-function viewShows(m){m.append(h('div',{class:'page'},h('div',{class:'ptitle'},h('h1',{},'TV Shows')),S.shows.length?h('div',{class:'grid'},S.shows.map(showCard)):h('div',{class:'empty'},'No TV shows found. Name episodes like ',h('code',{},'Show Name S01E02.mkv'),'.')))}
+function viewShows(m){m.append(h('div',{class:'page'},h('div',{class:'ptitle'},h('h1',{},'Shows')),S.shows.length?h('div',{class:'grid'},S.shows.map(showCard)):h('div',{class:'empty'},'No TV shows found. Name episodes like ',h('code',{},'Show Name S01E02.mkv'),'.')))}
 function viewRecent(m){m.append(h('div',{class:'page'},h('div',{class:'ptitle'},h('h1',{},'New & Popular')),row('Recently Added Videos',recentVideos()),row('Recently Added Music',[...S.albums].sort((a,b)=>b.added-a.added).slice(0,40).map(albumCard))))}
 function viewMyList(m){const c=S.mylist.map(keyCard).filter(Boolean);m.append(h('div',{class:'page'},h('div',{class:'ptitle'},h('h1',{},'My List')),c.length?h('div',{class:'grid'},c):h('div',{class:'empty'},'Add titles with the + button.')))}
 function viewMusic(m){S.asort??='artist';const list=[...S.albums];if(S.asort==='new')list.sort((a,b)=>b.added-a.added);if(S.asort==='title')list.sort((a,b)=>a.title.localeCompare(b.title));
@@ -2681,7 +2719,7 @@ function viewSearch(m){const q=S.q.toLowerCase().trim();const has=(...f)=>f.some
         al=S.albums.filter(a=>has(a.title,a.artist,a.genre)),tr=S.items.filter(t=>t.kind==='audio'&&has(t.title,t.artist));
   const w=h('div',{class:'page'},h('div',{class:'ptitle'},h('h1',{},`Results for “${S.q}”`)));
   if(!(mv.length+sh.length+eps.length+al.length+tr.length))w.append(h('div',{class:'empty'},'No matches.'));
-  w.append(...[row('Movies',mv.map(itemCard)),row('TV Shows',sh.map(showCard)),row('Episodes',eps.slice(0,40).map(itemCard)),row('Albums',al.map(albumCard))].filter(Boolean));
+  w.append(...[row('Movies',mv.map(itemCard)),row('Shows',sh.map(showCard)),row('Episodes',eps.slice(0,40).map(itemCard)),row('Albums',al.map(albumCard))].filter(Boolean));
   if(tr.length)w.append(h('section',{class:'row',style:'padding:0 4%'},h('h2',{style:'margin:0 0 10px'},'Songs'),tr.slice(0,50).map((t,i)=>trackRow(t,i+1,()=>playQueue(tr,i)))));m.append(w)}
 
 /* ---------- detail modals ---------- */
@@ -2866,14 +2904,14 @@ function stopMusic(pauseOnly){aud.pause();if(!pauseOnly){mfClose();aud.removeAtt
 aud.addEventListener('ended',mnext);
 aud.addEventListener('error',()=>{if(!aud.getAttribute('src'))return;if(M.mode==='direct'&&S.transcode){M.mode='tx';const tr=M.q[M.i];aud.src=`/transcode/${tr.id}?t=0`;M.off=0;aud.play().catch(()=>{})}else mnext()});
 aud.addEventListener('play',()=>{mPlayIcon();mfPlayIcon()});aud.addEventListener('pause',()=>{mPlayIcon();mfPlayIcon()});
-aud.addEventListener('timeupdate',()=>{const d=mdur();$('#mcur').textContent=fmtT(mcur());$('#mdur').textContent=fmtT(d);if(d&&!M.drag)$('#mseek').value=mcur()/d*1000;
+aud.addEventListener('timeupdate',()=>{const d=mdur();$('#mcur').textContent=fmtT(mcur());$('#mdur').textContent=fmtT(d);if(d&&!M.drag){$('#mseek').value=mcur()/d*1000;$('#mseek').style.setProperty('--pct',mcur()/d*100+'%')}
   if(TOUCH&&d&&!M.sdrag)mpShow(mcur());
   if(MF.open&&!MF.drag&&!MF.skip)mfTime();
   // the lock screen's (and the car's) progress bar
   const ms=navigator.mediaSession;if(ms&&ms.setPositionState&&d&&Date.now()-(M.posAt||0)>1000){M.posAt=Date.now();try{ms.setPositionState({duration:d,position:Math.min(mcur(),d),playbackRate:1})}catch(e){}}});
 $('#mplay').onclick=()=>aud.paused?aud.play():aud.pause();$('#mnext').onclick=mnext;$('#mprev').onclick=mprev;
-$('#mseek').oninput=()=>M.drag=true;$('#mseek').onchange=e=>{M.drag=false;mseek(e.target.value/1000*mdur())};
-$('#mvol').oninput=e=>{aud.volume=e.target.value;localStorage.hf_mvol=aud.volume};if(localStorage.hf_mvol){aud.volume=+localStorage.hf_mvol;$('#mvol').value=aud.volume}
+$('#mseek').oninput=e=>{M.drag=true;e.target.style.setProperty('--pct',e.target.value/10+'%')};$('#mseek').onchange=e=>{M.drag=false;mseek(e.target.value/1000*mdur())};
+$('#mvol').oninput=e=>{aud.volume=e.target.value;aud.muted=false;localStorage.hf_mvol=aud.volume;mVolShow();if(!TOUCH)mMuteIcon()};if(localStorage.hf_mvol){aud.volume=+localStorage.hf_mvol;$('#mvol').value=aud.volume}
 $('#mclose').onclick=()=>stopMusic(false);
 $('#mrep').onclick=()=>{M.rep=!M.rep;$('#mrep').classList.toggle('on',M.rep)};
 $('#mshuf').onclick=()=>{const curT=M.q[M.i];M.shuf=!M.shuf;$('#mshuf').classList.toggle('on',M.shuf);
@@ -2893,7 +2931,8 @@ const ICON={
   down:'<svg viewBox="0 0 24 24"><path d="M7.4 8.6 12 13.2l4.6-4.6L18 10l-6 6-6-6z"/></svg>',
   up:'<svg viewBox="0 0 24 24"><path d="M7.4 15.4 12 10.8l4.6 4.6L18 14l-6-6-6 6z"/></svg>',
   shuf:'<svg viewBox="0 0 24 24"><path d="M10.6 9.2 5.4 4 4 5.4l5.2 5.2zM14.5 4l2 2L4 18.6 5.4 20 18 7.5l2 2V4zm.3 9.4-1.4 1.4 3.1 3.1L14.5 20H20v-5.5l-2 2z"/></svg>',
-  rep:'<svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z"/></svg>'};
+  rep:'<svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z"/></svg>',
+  close:'<svg viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>'};
 const MF={open:false,drag:false,lock:null};
 [['#mfclose','down'],['#mfshuf','shuf'],['#mfrep','rep']].forEach(([s,k])=>$(s).innerHTML=ICON[k]);
 $('#mfprev').innerHTML=ICON.prev+'Previous';$('#mfnext').innerHTML='Next'+ICON.next;
@@ -2924,7 +2963,9 @@ function mfSkipButton(sel,dir){const b=$(sel),lab=b.querySelector('b');let n=0,f
 mfSkipButton('#mfback',-1);mfSkipButton('#mffwd',1);
 
 /* Phones and tablets: the music bar in two rows with big buttons (computers keep the one-row bar) */
-function mPlayIcon(){$('#mplay').innerHTML=aud.paused?(TOUCH?ICON.play:'&#9654;'):(TOUCH?ICON.pause:'&#10074;&#10074;')}
+function mPlayIcon(){$('#mplay').innerHTML=aud.paused?ICON.play:ICON.pause;$('#mplay').dataset.l=aud.paused?'Play':'Pause'}
+function mMuteIcon(){$('#mmute').innerHTML=aud.muted?VI.mute:VI.vol;$('#mmute').dataset.l=aud.muted?'Unmute':'Mute'}
+const mVolShow=()=>$('#mvol').style.setProperty('--pct',aud.volume*100+'%');
 if(TOUCH){const mb=$('#mbar');mb.classList.add('touch');document.body.classList.add('touchbar');
   mb.insertBefore($('#mexpand'),mb.querySelector('.mctr'));$('#mexpand').innerHTML=ICON.up+'Big player';
   $('#mprev').innerHTML=ICON.prev;$('#mnext').innerHTML=ICON.next;mPlayIcon();
@@ -2935,6 +2976,13 @@ if(TOUCH){const mb=$('#mbar');mb.classList.add('touch');document.body.classList.
   pr.addEventListener('pointermove',e=>{if(M.sdrag)mpShow(fr(e)*mdur())});
   pr.addEventListener('pointerup',e=>{if(!M.sdrag)return;end();const d=mdur();if(d)mseek(Math.min(fr(e)*d,d-0.5))});
   pr.addEventListener('pointercancel',()=>{end();mpShow(mcur())})}
+// computers: the TV-style bar (the seek bar moves to the top, Big player next to the volume)
+if(!TOUCH){const mb=$('#mbar');mb.classList.add('desk');document.body.classList.add('deskbar');
+  mb.insertBefore($('.mseek'),$('#mnow'));$('.mright').prepend($('#mexpand'));
+  $('#mexpand').innerHTML=ICON.up+'Big player';  // the same up arrow as on phones$('#mexpand').title='Big player (Now Playing)';
+  for(const [b,k,l] of [['#mshuf','shuf','Shuffle'],['#mprev','prev','Previous'],['#mnext','next','Next'],['#mrep','rep','Repeat'],['#mclose','close','Close']]){$(b).innerHTML=ICON[k];$(b).dataset.l=l;$(b).removeAttribute('title')}
+  $('#mplay').removeAttribute('title');$('#mmute').removeAttribute('title');mPlayIcon();mMuteIcon();mVolShow()}
+$('#mmute').onclick=()=>{aud.muted=!aud.muted;mMuteIcon()};
 function mpShow(t){const d=mdur(),f=d?Math.max(0,Math.min(1,t/d)):0;$('#mprog i').style.width=f*100+'%';$('#mprog em').style.left=f*100+'%';
   $('#mpcur').textContent=fmtT(t);$('#mpdur').textContent=fmtT(d);$('#mprog').setAttribute('aria-valuenow',Math.round(t))}
 $('#mfshuf').onclick=()=>{$('#mshuf').click();mfInfo()};$('#mfrep').onclick=()=>{$('#mrep').click();mfInfo()};
