@@ -54,7 +54,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -794,6 +794,7 @@ class State:
         self.data.setdefault("profiles", [])
         self.data.setdefault("progress", {})
         self.data.setdefault("mylist", {})
+        self.data.setdefault("music", {})  # each profile's music queue and spot, so it can carry on later
         if not self.data["profiles"]:
             self.data["profiles"].append({"id": "p1", "name": "Me", "color": self.COLORS[0]})
             self._save()
@@ -824,6 +825,7 @@ class State:
             self.data["profiles"] = [p for p in self.data["profiles"] if p["id"] != pid]
             self.data["progress"].pop(pid, None)
             self.data["mylist"].pop(pid, None)
+            self.data["music"].pop(pid, None)
             self._save()
 
     def _valid(self, pid):
@@ -831,7 +833,23 @@ class State:
 
     def get(self, pid):
         with self.lock:
-            return {"progress": self.data["progress"].get(pid, {}), "mylist": self.data["mylist"].get(pid, [])}
+            return {"progress": self.data["progress"].get(pid, {}), "mylist": self.data["mylist"].get(pid, []),
+                    "music": self.data["music"].get(pid)}
+
+    def set_music(self, pid, b):
+        """The music bar's queue, current song, spot in it and shuffle/repeat. An empty queue clears it."""
+        ids = lambda xs: [str(x) for x in (xs or []) if re.fullmatch(r"[0-9a-f]{14}", str(x))][:3000]
+        with self.lock:
+            if not self._valid(pid):
+                raise ValueError("bad profile")
+            q = ids(b.get("q"))
+            if not q:
+                self.data["music"].pop(pid, None)
+            else:
+                self.data["music"][pid] = {"q": q, "o": ids(b.get("o")), "i": max(0, min(int(b.get("i") or 0), len(q) - 1)),
+                                           "pos": round(max(0.0, float(b.get("pos") or 0)), 1),
+                                           "shuf": bool(b.get("shuf")), "rep": bool(b.get("rep")), "updated": int(time.time())}
+            self._save()
 
     def set_progress(self, pid, iid, pos, dur, done=None):
         with self.lock:
@@ -1984,6 +2002,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else:
                 self.state.set_progress(b["profile"], b["id"], b.get("pos", 0), b.get("dur", 0), b.get("done"))
             return self.send_json({"ok": True})
+        if path == "/api/music":
+            self.state.set_music(b["profile"], b)
+            return self.send_json({"ok": True})
         if path == "/api/mylist":
             self.state.set_mylist(b["profile"], b["key"], bool(b.get("on")))
             return self.send_json({"ok": True})
@@ -2831,7 +2852,7 @@ async function loadLibrary(){
   if(d.version!==S.version){S.version=d.version;S.items=d.items;group();render()}
   if(d.scanning)setTimeout(loadLibrary,3000);
 }
-async function loadState(){const d=await api('/api/state?profile='+encodeURIComponent(S.profile.id));S.progress=d.progress||{};S.mylist=d.mylist||[]}
+async function loadState(){const d=await api('/api/state?profile='+encodeURIComponent(S.profile.id));S.progress=d.progress||{};S.mylist=d.mylist||[];S.music=d.music||null}
 const prog=id=>S.progress[id];
 function pct(id){const p=prog(id);if(!p||!p.dur||p.done)return 0;return Math.min(100,p.pos/p.dur*100)}
 
@@ -3062,40 +3083,80 @@ $('#pnotad').onclick=async()=>{const x=P.box||{};if(!x.b||!P.it)return;const b=x
 
 /* ---------- music player ---------- */
 const aud=$('#aud'),M={q:[],i:0,mode:'direct',off:0,shuf:false,rep:false,orig:[]};
-function playQueue(list,i=0,shuffle=false){if(P.it)closePlayer();M.orig=[...list];M.q=[...list];M.shuf=shuffle;
+function playQueue(list,i=0,shuffle=false){if(P.it)closePlayer();mkeep();M.orig=[...list];M.q=[...list];M.shuf=shuffle;
   if(shuffle){const first=M.q.splice(i,1)[0];for(let k=M.q.length-1;k>0;k--){const j=Math.floor(Math.random()*(k+1));[M.q[k],M.q[j]]=[M.q[j],M.q[k]]}M.q.unshift(first);i=0}
   $('#mshuf').classList.toggle('on',M.shuf);M.i=i;loadTrack(0)}
-function loadTrack(t){const tr=M.q[M.i];if(!tr)return;M.mode=(tr.direct||!S.transcode)?'direct':'tx';M.off=M.mode==='tx'?t:0;
-  aud.src=M.mode==='direct'?'/media/'+tr.id:`/transcode/${tr.id}?t=${t}`;if(M.mode==='direct'&&t)aud.addEventListener('loadedmetadata',()=>aud.currentTime=t,{once:true});
-  aud.play().catch(()=>{});$('#mbar').classList.remove('hidden');document.body.classList.add('mplay');
+function loadTrack(t){const tr=M.q[M.i];if(!tr)return;M.pendingStart=null;
+  // long tracks (DJ sets, live recordings) carry on where you left them, like videos
+  const p=prog(tr.id);if(!t&&(tr.duration||0)>=MLONG&&p&&!p.done&&p.pos>20)t=Math.max(0,p.pos-5);
+  M.ready=false;M.mode=(tr.direct||!S.transcode)?'direct':'tx';M.off=M.mode==='tx'?t:0;
+  // the spot to jump to. iPhones ignore a jump made before you press play, so it's tried again once the
+  // song is playing; until then the bar shows this spot instead of 0:00
+  M.seekTo=M.mode==='direct'&&t?t:null;
+  aud.src=M.mode==='direct'?'/media/'+tr.id:`/transcode/${tr.id}?t=${t}`;if(M.seekTo!=null)aud.addEventListener('loadedmetadata',mjump,{once:true});
+  aud.play().catch(()=>{});mShowTrack(tr)}
+// the music bar, Now Playing and the lock screen show this song
+function mShowTrack(tr){$('#mbar').classList.remove('hidden');document.body.classList.add('mplay');
   const al=S.albumByKey['album:'+tr.albumArtist+'\u0001'+tr.album];
   $('#mnow').replaceChildren(art(al?al.cover:tr.id,tr.album,true),h('div',{class:'tt'},h('b',{},tr.title),h('span',{},tr.artist+' — '+tr.album)));
   $('#mnow').onclick=()=>matchMedia('(pointer:coarse)').matches?mfOpen():al&&openAlbum(al);  // phones: the big controls
   if(MF.open)mfInfo();
   if('mediaSession'in navigator){navigator.mediaSession.metadata=new MediaMetadata({title:tr.title,artist:tr.artist,album:tr.album,artwork:[{src:'/thumb/'+(al?al.cover:tr.id),sizes:'500x500',type:'image/jpeg'}]})}
   document.querySelectorAll('.trk').forEach(()=>{});}
-const mcur=()=>M.off+(aud.currentTime||0),mdur=()=>(M.q[M.i]||{}).duration||(isFinite(aud.duration)?aud.duration:0);
-function mnext(){if(M.i<M.q.length-1){M.i++;loadTrack(0)}else if(M.rep){M.i=0;loadTrack(0)}else{aud.pause()}}
-function mprev(){if(mcur()>3){mseek(0);return}if(M.i>0){M.i--;loadTrack(0)}}
-function mseek(t){if(M.mode==='direct')aud.currentTime=t;else loadTrack(t)}
+function mjump(){if(M.seekTo==null)return;if(Math.abs(aud.currentTime-M.seekTo)>2)try{aud.currentTime=M.seekTo}catch(e){}else M.seekTo=null}
+const mcur=()=>M.seekTo!=null?M.seekTo:M.off+(aud.currentTime||0),mdur=()=>(M.q[M.i]||{}).duration||(isFinite(aud.duration)?aud.duration:0);
+function mnext(){mkeep();if(M.i<M.q.length-1){M.i++;loadTrack(0)}else if(M.rep){M.i=0;loadTrack(0)}else{aud.pause()}}
+function mprev(){if(mcur()>3){mseek(0);return}mkeep();if(M.i>0){M.i--;loadTrack(0)}}
+function mseek(t){if(M.pendingStart!=null){M.pendingStart=M.seekTo=t;aud.dispatchEvent(new Event('timeupdate'));return}M.seekTo=null;if(M.mode==='direct')aud.currentTime=t;else loadTrack(t)}
 function stopMusic(pauseOnly){aud.pause();if(!pauseOnly){mfClose();aud.removeAttribute('src');aud.load();$('#mbar').classList.add('hidden');document.body.classList.remove('mplay')}}
-aud.addEventListener('ended',mnext);
+aud.addEventListener('ended',()=>{msave(false,true);M.ready=false;mnext()});
+/* ---------- carrying on later ----------
+   Each profile's queue, song and spot are kept on the server, so after the phone reloads the page (or on
+   another device) the music bar comes back, paused, where you left off. Long tracks also remember their
+   own spot, like videos */
+const MLONG=600;
+function msend(url,body,beacon){if(beacon&&navigator.sendBeacon)navigator.sendBeacon(url,new Blob([JSON.stringify(body)],{type:'application/json'}));else post(url,body).catch(()=>{})}
+function msave(beacon,ended){const tr=M.q[M.i];if(!S.profile||!tr)return;M.savedAt=Date.now();M.savedId=tr.id;
+  // until the song has loaded (and jumped to its spot), the position isn't known yet: keep the saved one
+  const pos=M.ready?mcur():M.pendingStart!=null?M.pendingStart:(S.music&&S.music.q[S.music.i]===tr.id?S.music.pos:0),d=mdur();
+  S.music={q:M.q.map(t=>t.id),o:M.orig.map(t=>t.id),i:M.i,pos:ended?0:pos,shuf:M.shuf,rep:M.rep};
+  msend('/api/music',{profile:S.profile.id,...S.music},beacon);
+  if(d>=MLONG&&(M.ready||ended)){const at=ended?d:pos,done=ended||at>=d-30;
+    S.progress[tr.id]={pos:at,dur:d,done,updated:Date.now()/1000};msend('/api/progress',{profile:S.profile.id,id:tr.id,pos:at,dur:d,done},beacon)}}
+// before changing songs: remember where you were in a long one
+function mkeep(){const tr=M.q[M.i];if(!S.profile||!tr||!M.ready||mdur()<MLONG||$('#mbar').classList.contains('hidden'))return;
+  const at=mcur(),d=mdur(),done=at>=d-30;S.progress[tr.id]={pos:at,dur:d,done,updated:Date.now()/1000};
+  msend('/api/progress',{profile:S.profile.id,id:tr.id,pos:at,dur:d,done})}
+// Bring the bar back, paused. Only the song and the spot are shown: iPhones won't load audio until you
+// press play (a jump asked for before that never finishes and playback hangs), so the song is loaded
+// when you press play, from that press
+function mrestore(){const m=S.music;if(!m||!$('#mbar').classList.contains('hidden'))return;
+  const q=m.q.map(id=>S.byId[id]).filter(Boolean);if(!q.length)return;const cur=S.byId[m.q[m.i]];
+  M.q=q;M.orig=(m.o||[]).map(id=>S.byId[id]).filter(Boolean);if(!M.orig.length)M.orig=[...q];
+  M.i=Math.max(0,q.indexOf(cur));M.shuf=!!m.shuf;M.rep=!!m.rep;$('#mshuf').classList.toggle('on',M.shuf);$('#mrep').classList.toggle('on',M.rep);
+  M.ready=false;M.off=0;M.pendingStart=M.seekTo=cur?m.pos||0:0;mShowTrack(M.q[M.i]);mPlayIcon();mfPlayIcon();aud.dispatchEvent(new Event('timeupdate'))}
+function mtoggle(){if(M.pendingStart!=null){loadTrack(M.pendingStart);return}aud.paused?aud.play():aud.pause()}
+aud.addEventListener('playing',()=>{mjump();M.ready=true;const tr=M.q[M.i];if(tr&&M.savedId!==tr.id)msave()});  // a new song: save straight awayaud.addEventListener('seeked',()=>{if(M.seekTo!=null&&Math.abs(aud.currentTime-M.seekTo)<=2)M.seekTo=null;M.ready=true});
+aud.addEventListener('pause',()=>{if(M.ready)msave()});
+addEventListener('pagehide',()=>{if(!$('#mbar').classList.contains('hidden'))msave(true)});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&!$('#mbar').classList.contains('hidden'))msave(true)});
 aud.addEventListener('error',()=>{if(!aud.getAttribute('src'))return;if(M.mode==='direct'&&S.transcode){M.mode='tx';const tr=M.q[M.i];aud.src=`/transcode/${tr.id}?t=0`;M.off=0;aud.play().catch(()=>{})}else mnext()});
 aud.addEventListener('play',()=>{mPlayIcon();mfPlayIcon()});aud.addEventListener('pause',()=>{mPlayIcon();mfPlayIcon()});
 aud.addEventListener('timeupdate',()=>{const d=mdur();$('#mcur').textContent=fmtT(mcur());$('#mdur').textContent=fmtT(d);if(d&&!M.drag){$('#mseek').value=mcur()/d*1000;$('#mseek').style.setProperty('--pct',mcur()/d*100+'%')}
   if(TOUCH&&d&&!M.sdrag)mpShow(mcur());
+  if(!aud.paused&&M.ready&&Date.now()-(M.savedAt||0)>10000)msave();
   if(MF.open&&!MF.drag&&!MF.skip)mfTime();
   // the lock screen's (and the car's) progress bar
   const ms=navigator.mediaSession;if(ms&&ms.setPositionState&&d&&Date.now()-(M.posAt||0)>1000){M.posAt=Date.now();try{ms.setPositionState({duration:d,position:Math.min(mcur(),d),playbackRate:1})}catch(e){}}});
-$('#mplay').onclick=()=>aud.paused?aud.play():aud.pause();$('#mnext').onclick=mnext;$('#mprev').onclick=mprev;
+$('#mplay').onclick=mtoggle;$('#mnext').onclick=mnext;$('#mprev').onclick=mprev;
 $('#mseek').oninput=e=>{M.drag=true;e.target.style.setProperty('--pct',e.target.value/10+'%')};$('#mseek').onchange=e=>{M.drag=false;mseek(e.target.value/1000*mdur())};
 $('#mvol').oninput=e=>{aud.volume=e.target.value;aud.muted=false;localStorage.hf_mvol=aud.volume;mVolShow();if(!TOUCH)mMuteIcon()};if(localStorage.hf_mvol){aud.volume=+localStorage.hf_mvol;$('#mvol').value=aud.volume}
-$('#mclose').onclick=()=>stopMusic(false);
-$('#mrep').onclick=()=>{M.rep=!M.rep;$('#mrep').classList.toggle('on',M.rep)};
+$('#mclose').onclick=()=>{msave();stopMusic(false);if(S.profile){S.music=null;msend('/api/music',{profile:S.profile.id,q:[]})}};  // closed: don't bring it back
+$('#mrep').onclick=()=>{M.rep=!M.rep;$('#mrep').classList.toggle('on',M.rep);msave()};
 $('#mshuf').onclick=()=>{const curT=M.q[M.i];M.shuf=!M.shuf;$('#mshuf').classList.toggle('on',M.shuf);
   if(M.shuf){const rest=M.q.filter(t=>t!==curT);for(let k=rest.length-1;k>0;k--){const j=Math.floor(Math.random()*(k+1));[rest[k],rest[j]]=[rest[j],rest[k]]}M.q=[curT,...rest];M.i=0}
-  else{M.q=[...M.orig];M.i=Math.max(0,M.q.indexOf(curT))}};
-if('mediaSession'in navigator){const ms=navigator.mediaSession;ms.setActionHandler('play',()=>aud.play());ms.setActionHandler('pause',()=>aud.pause());ms.setActionHandler('nexttrack',mnext);ms.setActionHandler('previoustrack',mprev);
+  else{M.q=[...M.orig];M.i=Math.max(0,M.q.indexOf(curT))}msave()};
+if('mediaSession'in navigator){const ms=navigator.mediaSession;ms.setActionHandler('play',()=>M.pendingStart!=null?mtoggle():aud.play());ms.setActionHandler('pause',()=>aud.pause());ms.setActionHandler('nexttrack',mnext);ms.setActionHandler('previoustrack',mprev);
   try{ms.setActionHandler('seekto',d=>{if(d.seekTime!=null)mseek(d.seekTime)})}catch(e){}}  // drag the lock screen's progress bar
 
 /* ---------- Now Playing: big controls for phones and the car ---------- */
@@ -3130,7 +3191,7 @@ function mfOpen(){if(!M.q[M.i])return;MF.open=true;mfInfo();$('#mfull').classLis
 function mfClose(){if(!MF.open)return;MF.open=false;$('#mfull').classList.add('hidden');if(!P.it)document.body.classList.remove('noscroll');mfWake(false)}
 $('#mexpand').onclick=mfOpen;$('#mfclose').onclick=mfClose;
 $('#mfsub').onclick=()=>{const tr=M.q[M.i],al=tr&&mfAlbum(tr);if(al){mfClose();openAlbum(al)}};
-$('#mfplay').onclick=()=>aud.paused?aud.play():aud.pause();
+$('#mfplay').onclick=mtoggle;
 $('#mfprev').onclick=mprev;$('#mfnext').onclick=mnext;
 // Skip back / forward: each tap adds 15 s, so a double-tap is 30 s. The jump happens a moment after the
 // last tap, as one seek; meanwhile the button turns red with the total and the slider shows where it lands
@@ -3190,7 +3251,7 @@ async function showGate(manage){const d=await api('/api/profiles');S.profiles=d.
   g.replaceChildren(h('div',{class:'logo',style:'position:absolute;top:20px;left:4%'},'HOMEFLIX'),h('h1',{},manage?'Manage Profiles:':'Who’s watching?'),h('div',{class:'profs'},tiles),
     h('button',{class:'gbtn',onclick:()=>showGate(!manage)},manage?'DONE':'MANAGE PROFILES'));g.classList.remove('hidden')}
 async function choose(p){S.profile=p;localStorage.hf_profile=p.id;$('#gate').classList.add('hidden');const av=$('#avatar');av.textContent=p.name[0].toUpperCase();av.style.background=p.color;av.title=p.name+' — switch profile';
-  await loadState();S.version=-1;S.view='home';await loadLibrary()}
+  await loadState();S.version=-1;S.view='home';await loadLibrary();mrestore()}
 
 /* ---------- wiring ---------- */
 document.querySelectorAll('[data-go]').forEach(a=>a.addEventListener('click',()=>go(a.dataset.go)));
