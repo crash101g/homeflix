@@ -52,7 +52,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -2230,6 +2230,8 @@ select.sel{background:#000;color:#fff;border:1px solid #fff;padding:5px 8px;font
 .empty code{background:#222;padding:2px 6px;border-radius:3px}
 .scanning{position:fixed;right:16px;bottom:16px;background:#222;padding:8px 14px;border-radius:4px;font-size:13px;z-index:30;box-shadow:0 4px 12px #0008}
 body.mplay .scanning{bottom:96px}
+/* the music bar sits in front of an open album, so leave room under the album's last songs */
+body.mplay #modal{padding-bottom:110px}
 /* modal */
 #modal{position:fixed;inset:0;z-index:40;background:#000b;overflow-y:auto;padding:4vh 12px}
 .mbox{max-width:860px;margin:0 auto;background:#181818;border-radius:8px;overflow:hidden;box-shadow:0 8px 40px #000;position:relative}
@@ -2361,7 +2363,7 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
 .spinner{width:52px;height:52px;border:5px solid #fff3;border-top-color:var(--red);border-radius:50%;animation:sp 1s linear infinite;position:absolute;left:50%;top:50%;margin:-26px;z-index:1;pointer-events:none}
 @keyframes sp{to{transform:rotate(360deg)}}
 /* music bar */
-#mbar{position:fixed;left:0;right:0;bottom:0;z-index:30;background:#181818;border-top:1px solid #282828;display:grid;grid-template-columns:minmax(180px,1fr) 2fr minmax(120px,1fr);align-items:center;gap:16px;padding:10px 16px;height:84px}
+#mbar{position:fixed;left:0;right:0;bottom:0;z-index:50;background:#181818;border-top:1px solid #282828;display:grid;grid-template-columns:minmax(180px,1fr) 2fr minmax(120px,1fr);align-items:center;gap:16px;padding:10px 16px;height:84px}
 #mbar .now{display:flex;gap:12px;align-items:center;min-width:0;cursor:pointer}
 #mbar .now .art{width:56px;flex:0 0 56px}
 #mbar .now .ph{font-size:9px}
@@ -2407,10 +2409,11 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
 #mbar.touch .mbtns .pp svg{width:48px;height:48px}
 body.mplay.touchbar main{padding-bottom:230px}
 body.mplay.touchbar .scanning{bottom:200px}
+body.mplay.touchbar #modal{padding-bottom:240px}
 /* Computers: a bigger, TV-style music bar. A thick red bar across the top with the times at its ends,
    then the song, big round buttons, and Big player / volume / close. The button under the mouse (or
    keyboard focus) turns white and shows its name above it */
-#mbar.desk{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);grid-template-areas:"seek seek seek" "now ctl right";
+#mbar.desk{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(max-content,1fr);grid-template-areas:"seek seek seek" "now ctl right";
   height:auto;gap:0 24px;padding:4px 32px 12px;align-items:center;background:#141414f7;border-top:1px solid #2a2a2a}
 #mbar.desk .mseek{grid-area:seek;display:flex;gap:18px;height:40px;font-size:16px;color:#ccc;font-variant-numeric:tabular-nums}
 #mbar.desk #mseek{-webkit-appearance:none;appearance:none;height:8px;border-radius:4px;background:linear-gradient(to right,var(--red) var(--pct,0%),#ffffff4d var(--pct,0%))}
@@ -2426,7 +2429,7 @@ body.mplay.touchbar .scanning{bottom:200px}
 #mbar.desk .mbtns .pp{width:72px;height:72px;border:3px solid #fff}#mbar.desk .mbtns .pp svg{width:42px;height:42px}
 #mbar.desk .mright{grid-area:right;display:flex;justify-content:flex-end;align-items:center;gap:14px}
 #mbar.desk .mright button{width:56px;height:56px;min-width:56px}#mbar.desk .mright svg{width:30px;height:30px;fill:currentColor}
-#mbar.desk #mexpand{display:flex;align-items:center;gap:10px;width:auto;margin:0 auto;height:52px;padding:0 22px 0 16px;border-radius:26px;background:#ffffff1f;font-size:18px!important;font-weight:600;white-space:nowrap}
+#mbar.desk #mexpand{display:flex;align-items:center;gap:10px;width:auto;margin:0 auto;flex-shrink:0;height:52px;padding:0 22px 0 16px;border-radius:26px;background:#ffffff1f;font-size:18px!important;font-weight:600;white-space:nowrap}
 #mbar.desk #mexpand svg{width:24px;height:24px}
 #mbar.desk button:hover,#mbar.desk button:focus-visible{background:#fff!important;color:#000!important;outline:0}
 #mbar.desk button[data-l]::after{content:attr(data-l);position:absolute;bottom:calc(100% + 10px);left:50%;transform:translateX(-50%);white-space:nowrap;
@@ -2440,8 +2443,9 @@ body.mplay.touchbar .scanning{bottom:200px}
 #mbar.desk #mvol::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:var(--red);border:0}
 body.mplay.deskbar main{padding-bottom:150px}
 body.mplay.deskbar .scanning{bottom:156px}
-/* narrower windows: drop the volume slider and the words on Big player, then shuffle/repeat and the album name */
-@media (max-width:1100px){#mbar.desk .mbtns{gap:6px}#mbar.desk #mvol{display:none}#mbar.desk #mexpand{font-size:0!important;width:56px;padding:0;justify-content:center;border-radius:50%}#mbar.desk #mexpand svg{width:34px;height:34px}}
+body.mplay.deskbar #modal{padding-bottom:160px}
+/* narrower windows (up to 1200 px): drop the volume slider and the words on Big player, then shuffle/repeat and the album name */
+@media (max-width:1200px){#mbar.desk .mbtns{gap:6px}#mbar.desk #mvol{display:none}#mbar.desk #mexpand{font-size:0!important;width:56px;padding:0;justify-content:center;border-radius:50%}#mbar.desk #mexpand svg{width:34px;height:34px}}
 @media (max-width:800px){#mbar.desk{padding:4px 14px 10px;gap:0 10px}#mbar.desk .mright,#mbar.desk .mseek{display:flex}#mbar.desk #mshuf,#mbar.desk #mrep{display:none}
   #mbar.desk .mbtns{gap:6px}#mbar.desk .mbtns button{width:56px;height:56px;min-width:56px}#mbar.desk .mbtns .pp{width:64px;height:64px}
   #mbar.desk .mright{gap:4px}#mbar.desk .tt b{font-size:17px}#mbar.desk .tt span{font-size:13px}#mbar.desk .now .art{width:56px;flex-basis:56px}}
