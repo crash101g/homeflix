@@ -52,7 +52,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -2106,8 +2106,10 @@ a{color:inherit}
 #links a{text-decoration:none;color:#e5e5e5;cursor:pointer}
 #links a.on{color:#fff;font-weight:700}
 #links a:hover{color:#b3b3b3}
-.navr{margin-left:auto;display:flex;align-items:center;gap:14px}
-#search{background:#000a;border:1px solid #fff8;color:#fff;padding:7px 10px 7px 32px;width:220px;border-radius:2px;font-size:14px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='white' stroke-width='2'%3E%3Ccircle cx='7' cy='7' r='5'/%3E%3Cpath d='M11 11l4 4'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:9px center}
+.navr{margin-left:auto;display:flex;align-items:center;gap:14px;min-width:0;flex:0 1 auto}
+/* the header must fit the screen: the search box gives way, the logo and buttons never do */
+.logo,#menuBtn,#rescan,#avatar{flex-shrink:0}
+#search{background:#000a;border:1px solid #fff8;color:#fff;padding:7px 10px 7px 32px;width:auto;flex:0 1 220px;min-width:0;border-radius:2px;font-size:14px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='white' stroke-width='2'%3E%3Ccircle cx='7' cy='7' r='5'/%3E%3Cpath d='M11 11l4 4'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:9px center}
 #search:focus{outline:none;border-color:#fff}
 .iconbtn{background:none;border:0;font-size:20px;opacity:.85;padding:4px}
 .iconbtn:hover{opacity:1}
@@ -2133,7 +2135,9 @@ main{padding-bottom:120px}
 .rowwrap{position:relative}
 .track{display:flex;gap:6px;overflow-x:auto;padding:14px 4%;scroll-behavior:smooth;scrollbar-width:none;scroll-padding:0 4%}
 .track::-webkit-scrollbar{display:none}
-.arr{position:absolute;top:14px;bottom:14px;width:4%;z-index:4;border:0;background:#000a;font-size:40px;opacity:0;transition:opacity .2s}
+.arr{position:absolute;top:14px;bottom:14px;width:4%;z-index:4;border:0;padding:0;overflow:hidden;background:#000a;font-size:40px;opacity:0;transition:opacity .2s}
+/* the row arrows are for mice; on phones their glyph stuck out past the screen edge and made the page wiggle sideways */
+@media (hover:none){.arr{display:none}}
 .rowwrap:hover .arr{opacity:1}.arr.l{left:0}.arr.r{right:0}
 .card{flex:0 0 auto;width:clamp(150px,17vw,300px);cursor:pointer;transition:transform .25s;position:relative;border-radius:4px}
 .card.sq{width:clamp(130px,13vw,220px)}
@@ -2404,7 +2408,7 @@ body.mplay.touchbar .scanning{bottom:200px}
 @media (max-width:800px){
  #links{display:none}#nav.menu #links{display:flex;position:absolute;top:60px;left:0;right:0;flex-direction:column;background:#141414;padding:14px 4%}
  #menuBtn{display:inline-block!important}
- #search{width:130px}
+ #search{flex-basis:130px}
  .hero{height:60vh}.hero .info{bottom:16%}
  .rows{margin-top:-6vh}
  #mbar{grid-template-columns:1fr auto;height:76px;padding:8px 10px 8px 12px}
@@ -2414,6 +2418,12 @@ body.mplay.touchbar .scanning{bottom:200px}
  .ep .art{width:100px;flex-basis:100px}
  .mhead.album{flex-direction:column;align-items:flex-start}.mhead.album .art{width:150px;flex-basis:auto}
 }
+/* phones held upright: a smaller logo without the version badge, so the search box, rescan and profile fit */
+@media (max-width:500px){
+ #nav{gap:12px}.navr{gap:10px}
+ .logo{font-size:24px}.logo .ver{display:none}
+}
+@media (max-width:400px){#nav{gap:8px}.navr{gap:6px}.logo{font-size:22px}#search{padding-right:4px;padding-left:30px;background-position:8px center}}
 </style></head>
 <body>
 <div id="gate" class="hidden"></div>
@@ -2893,6 +2903,7 @@ async function choose(p){S.profile=p;localStorage.hf_profile=p.id;$('#gate').cla
 document.querySelectorAll('[data-go]').forEach(a=>a.addEventListener('click',()=>go(a.dataset.go)));
 $('#menuBtn').onclick=()=>$('#nav').classList.toggle('menu');
 $('#avatar').onclick=()=>{if(P.it)closePlayer();showGate(false)};
+if(matchMedia('(max-width:500px)').matches)$('#search').placeholder='Search';
 let st;$('#search').addEventListener('input',e=>{clearTimeout(st);st=setTimeout(()=>{S.q=e.target.value;if(S.q.trim()){S.view='search';render()}else go('home')},200)});
 $('#rescan').onclick=async()=>{await post('/api/rescan',{});$('#scan').classList.remove('hidden');setTimeout(loadLibrary,800)};
 addEventListener('scroll',()=>$('#nav').classList.toggle('solid',scrollY>40),{passive:true});
