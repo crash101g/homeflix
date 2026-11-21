@@ -35,12 +35,14 @@ import hashlib
 import hmac
 import http.server
 import json
+import math
 import mimetypes
 import os
 import random
 import re
 import secrets
 import shutil
+import signal
 import socket
 import socketserver
 import subprocess
@@ -52,7 +54,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.6.1"
+VERSION = "1.7.0"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -1819,6 +1821,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     quiet = False
     quality = "high"
     ads: "AdFinder" = None
+    hls: "HlsJobs" = None
     converting = 0  # videos being converted right now: ad finding waits for them
     conv_lock = threading.Lock()
 
@@ -1907,6 +1910,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not it:
                 return self.err(404, "unknown item")
             return self.send_json(self.ads.info(it))
+        m = re.fullmatch(r"/hls/([0-9a-f]{14})/(?:index\.m3u8|seg(\d+)\.ts)", path)
+        if m:  # converted video for Apple's player (see HlsJobs)
+            it = self.lib.get(m.group(1))
+            if not it or it["kind"] != "video" or not it.get("duration"):
+                return self.err(404, "unknown item")
+            if not FFMPEG:
+                return self.err(501, "ffmpeg is not installed on the server")
+            if m.group(2) is None:
+                return self.send_bytes(self.hls.playlist(it).encode(), "application/vnd.apple.mpegurl",
+                                       extra={"Cache-Control": "no-store"})
+            # phones and tablets get at most "high": it's sharp on their screens, and "max" can't keep up
+            # with 1080p on a modest PC
+            seg = self.hls.segment(it, int(m.group(2)), "high" if self.quality == "max" else self.quality)
+            if not seg:
+                return self.err(500, "could not convert this part")
+            return self.send_file(seg, "video/mp2t", cache="no-store")
         m = re.fullmatch(r"/(media|transcode|thumb|subs)/([0-9a-f]{14})(?:/(\d+))?", path)
         if not m:
             return self.err(404, "not found")
@@ -2044,13 +2063,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             elif not VENC or (v.get("codec") == "h264" and pix in ("yuv420p", "yuvj420p", None)):
                 cmd += ["-c:v", "copy"]
             else:
-                preset, crf, mbit = QUALITY[self.quality]
-                scale = ["-pix_fmt", "yuv420p", "-vf", "scale='min(1920,iw)':-2"]
-                if VENC == "libx264":
-                    cmd += ["-c:v", VENC, "-preset", preset, "-crf", str(crf), "-maxrate", f"{mbit}M",
-                            "-bufsize", f"{mbit * 2}M", "-g", "48"] + scale
-                else:  # libopenh264 has no CRF mode; its default bitrate is very low
-                    cmd += ["-c:v", VENC, "-b:v", f"{mbit // 2}M", "-maxrate", f"{mbit}M"] + scale
+                cmd += h264_args(self.quality) + ["-g", "48"]
             if a.get("codec") == "aac":
                 # AAC from .ts recordings comes in ADTS packets, which MP4 can't hold as they are
                 cmd += ["-c:a", "copy", "-bsf:a", "aac_adtstoasc"]
@@ -2087,6 +2100,161 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if counted:
                 with Handler.conv_lock:
                     Handler.converting -= 1
+
+
+def h264_args(quality):
+    """ffmpeg options to convert video to H.264 at the chosen quality level."""
+    preset, crf, mbit = QUALITY[quality]
+    scale = ["-pix_fmt", "yuv420p", "-vf", "scale='min(1920,iw)':-2"]
+    if VENC == "libx264":
+        return ["-c:v", VENC, "-preset", preset, "-crf", str(crf), "-maxrate", f"{mbit}M", "-bufsize", f"{mbit * 2}M"] + scale
+    # libopenh264 has no CRF mode; its default bitrate is very low
+    return ["-c:v", VENC, "-b:v", f"{mbit // 2}M", "-maxrate", f"{mbit}M"] + scale
+
+
+HLS_SEG = 6  # seconds per HLS segment
+
+
+class HlsJobs:
+    """Converted video for Apple's player (iPhone, iPad, Safari on a Mac). It won't play a stream
+    whose length isn't known, so it gets an HLS playlist of short segments instead. One ffmpeg per
+    video makes the segments in order into the cache; skipping far ahead or back starts it again
+    from there. It pauses when it's well ahead of playback, old segments are deleted as you watch,
+    and everything is removed shortly after you stop."""
+    AHEAD = 20       # pause ffmpeg once this many segments are ready past the last one asked for
+    BEHIND = 10      # keep this many already-watched segments, for skipping back a little
+    JUMP = 4         # asked for a segment more than this far past the newest one: start over there
+    IDLE = 90        # seconds without requests before a video's job is stopped and its files removed
+    MAX_JOBS = 3
+
+    def __init__(self, root: Path):
+        self.root = root
+        shutil.rmtree(root, ignore_errors=True)  # leftovers from the last run
+        self.jobs = {}
+        self.newest = {}  # video id -> number of its latest segment request
+        self.lock = threading.Lock()
+        threading.Thread(target=self._janitor, daemon=True).start()
+
+    @staticmethod
+    def count(it):
+        return max(1, math.ceil((it.get("duration") or 0) / HLS_SEG))
+
+    def playlist(self, it) -> str:
+        dur, n = it.get("duration") or 0, self.count(it)
+        lines = ["#EXTM3U", "#EXT-X-VERSION:3", f"#EXT-X-TARGETDURATION:{HLS_SEG}", "#EXT-X-MEDIA-SEQUENCE:0",
+                 "#EXT-X-PLAYLIST-TYPE:VOD"]
+        for i in range(n):
+            lines += [f"#EXTINF:{min(HLS_SEG, dur - i * HLS_SEG) if i == n - 1 else HLS_SEG:.3f},", f"seg{i}.ts"]
+        return "\n".join(lines + ["#EXT-X-ENDLIST", ""])
+
+    def _ready(self, job):
+        """Numbers of the finished segments (ffmpeg writes each to a temp name, then renames it)."""
+        out = set()
+        for f in os.listdir(job["dir"]) if job["dir"].is_dir() else ():
+            m = re.fullmatch(r"seg(\d+)\.ts", f)
+            if m:
+                out.add(int(m.group(1)))
+        return out
+
+    def _start(self, it, i, quality):
+        d = self.root / it["id"]
+        shutil.rmtree(d, ignore_errors=True)
+        d.mkdir(parents=True, exist_ok=True)
+        t = i * HLS_SEG
+        cmd = [FFMPEG, "-nostdin", "-v", "error", "-hide_banner"] + (["-ss", str(t)] if t else []) + [
+            "-i", it["_path"], "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn"] + h264_args(quality) + [
+            "-force_key_frames", f"expr:gte(t,n_forced*{HLS_SEG})", "-sc_threshold", "0"]
+        # sound is always converted: copied sound can't be cut exactly where a restarted segment begins
+        cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
+        cmd += ["-output_ts_offset", str(t), "-f", "hls", "-hls_time", str(HLS_SEG), "-hls_list_size", "0",
+                "-hls_flags", "temp_file", "-start_number", str(i), "-hls_segment_filename", str(d / "seg%d.ts"),
+                str(d / "ffmpeg.m3u8")]
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                                **SUBPROC)
+        with Handler.conv_lock:
+            Handler.converting += 1
+        return {"proc": proc, "dir": d, "start": i, "asked": i, "used": time.time(), "paused": False}
+
+    def _stop(self, job):
+        if job.get("stopped"):
+            return
+        job["stopped"] = True
+        self._pause(job, False)
+        job["proc"].kill()
+        job["proc"].wait()
+        with Handler.conv_lock:
+            Handler.converting -= 1
+        shutil.rmtree(job["dir"], ignore_errors=True)
+
+    @staticmethod
+    def _pause(job, on):
+        if WINDOWS or job["paused"] == on or job["proc"].poll() is not None:
+            return
+        try:
+            os.kill(job["proc"].pid, signal.SIGSTOP if on else signal.SIGCONT)
+            job["paused"] = on
+        except OSError:
+            pass
+
+    def segment(self, it, i, quality):
+        """Path of segment i once it's ready, or None if it couldn't be made."""
+        if not 0 <= i < self.count(it):
+            return None
+        with self.lock:  # the newest request for a video decides where its ffmpeg runs
+            me = self.newest[it["id"]] = self.newest.get(it["id"], 0) + 1
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            with self.lock:
+                job = self.jobs.get(it["id"])
+                ready = self._ready(job) if job else set()
+                newest = max(ready) if ready else (job["start"] - 1 if job else -1)
+                if job and i == job["start"] and not ready and job["proc"].poll() not in (None, 0):
+                    return None  # ffmpeg failed straight away: don't keep retrying
+                # start over at i if there's no job, i is before where it started, i was already made
+                # and deleted, i is far ahead, or ffmpeg stopped before reaching i
+                if i not in ready and (not job or i < job["start"] or i <= newest or i > newest + self.JUMP
+                                       or job["proc"].poll() is not None):
+                    if self.newest[it["id"]] != me:
+                        return None  # an older request (from before you skipped): don't fight the new one
+                    if job:
+                        self._stop(job)
+                    # a video you've moved on from (nothing asked for 15 s) shouldn't slow this one down
+                    for k in [k for k, j in self.jobs.items() if k != it["id"] and time.time() - j["used"] > 15]:
+                        self._stop(self.jobs.pop(k))
+                    if len(self.jobs) >= self.MAX_JOBS and it["id"] not in self.jobs:
+                        oldest = min(self.jobs, key=lambda k: self.jobs[k]["used"])
+                        self._stop(self.jobs.pop(oldest))
+                    job = self.jobs[it["id"]] = self._start(it, i, quality)
+                    ready = set()
+                job["used"] = time.time()
+                job["asked"] = max(job["asked"], i) if i >= job["asked"] - self.BEHIND else i
+                for old in [n for n in ready if n < job["asked"] - self.BEHIND]:
+                    try:
+                        os.unlink(job["dir"] / f"seg{old}.ts")
+                    except OSError:
+                        pass
+                self._pause(job, bool(ready) and max(ready) >= job["asked"] + self.AHEAD)
+                if i in ready:
+                    return job["dir"] / f"seg{i}.ts"
+            time.sleep(0.2)
+        return None
+
+    def stop_all(self):
+        with self.lock:
+            for k in list(self.jobs):
+                self._stop(self.jobs.pop(k))
+
+    def _janitor(self):
+        """Every 2 s: pause ffmpeg when it's far enough ahead, and stop jobs nobody is watching."""
+        while True:
+            time.sleep(2)
+            with self.lock:
+                for k, job in list(self.jobs.items()):
+                    if time.time() - job["used"] > self.IDLE:
+                        self._stop(self.jobs.pop(k))
+                        continue
+                    ready = self._ready(job)
+                    self._pause(job, bool(ready) and max(ready) >= job["asked"] + self.AHEAD)
 
 
 def guess_type(it):
@@ -2620,6 +2788,11 @@ const S={items:[],byId:{},movies:[],shows:[],albums:[],showByKey:{},albumByKey:{
 // Can this browser decode HEVC itself? Then HEVC files are passed through untouched instead of re-encoded.
 const HEVC=(()=>{const v=document.createElement('video'),ok=c=>v.canPlayType(`video/mp4; codecs="${c}"`)==='probably';return ok('hvc1.2.4.L120.90')?'10':ok('hvc1.1.6.L120.90')?'1':''})();
 const hevcPass=it=>!!HEVC&&it.vcodec==='hevc';
+// Apple's player (every browser on iPhone and iPad, and Safari on a Mac) won't play a converted stream of
+// unknown length, so it gets converted video as HLS: a playlist of short segments (/hls/...)
+const APPLE_HLS=/AppleWebKit/.test(navigator.userAgent)&&!/Chrome\/|Chromium|Android|Edg\//.test(navigator.userAgent)&&
+  !!document.createElement('video').canPlayType('application/vnd.apple.mpegurl');
+const txMode=()=>APPLE_HLS?'hls':'tx';
 
 function h(tag,attrs,...kids){const e=document.createElement(tag);
   for(const[k,v]of Object.entries(attrs||{})){if(v==null||v===false)continue;
@@ -2738,7 +2911,7 @@ function openMovie(it){const p=prog(it.id);const r=res(it);
       h('button',{class:'btn play',onclick:()=>{closeModal();playVideo(it)}},resumeLabel(it)),
       p&&p.pos>20?h('button',{class:'btn gray',onclick:()=>{closeModal();playVideo(it,0)}},'↺  Start Over'):null,listBtn(it.id)))),
    h('div',{class:'mbody'},meta(isNew(it)?h('span',{class:'new'},'New'):null,it.year,fmtDur(it.duration),r?h('span',{class:'hd'},r):null,it.subs?.length?h('span',{class:'hd'},'CC'):null,
-       !it.direct&&S.transcode&&!hevcPass(it)?h('span',{class:'hd',title:'Converted on the fly for your browser'},'TRANSCODE'):null),
+       !it.direct&&S.transcode&&(APPLE_HLS||!hevcPass(it))?h('span',{class:'hd',title:'Converted on the fly for your browser'},'TRANSCODE'):null),
      p&&!p.done&&p.dur?h('div',{style:'max-width:300px;margin-bottom:14px'},h('div',{class:'pbar',style:'position:static'},h('i',{style:`width:${pct(it.id)}%`})),h('div',{class:'small',style:'margin-top:6px'},`${fmtT(p.dur-p.pos)} remaining`)):null,
      h('div',{class:'small'},it.folder+' / '+it.file),h('div',{class:'small'},(it.size/1e9).toFixed(2)+' GB'))])}
 function nextUp(s){const ents=s.eps.map(e=>[e,prog(e.id)]).filter(x=>x[1]).sort((a,b)=>b[1].updated-a[1].updated);if(!ents.length)return s.eps[0];const[e,p]=ents[0];if(!p.done)return e;return s.eps[s.eps.indexOf(e)+1]||s.eps[0]}
@@ -2762,7 +2935,7 @@ function openAlbum(a){const dur=a.tracks.reduce((s,t)=>s+(t.duration||0),0);
 
 /* ---------- video player ---------- */
 const vid=$('#vid'),P={it:null,mode:'direct',off:0,dur:0,pending:0,sub:-1,lastSave:0,drag:false,idleT:0};
-function playVideo(it,start){stopMusic(true);closeModal();P.it=it;P.dur=it.duration||0;P.mode=(it.direct||!S.transcode)?'direct':'tx';P.hevc=hevcPass(it);P.sub=-1;
+function playVideo(it,start){stopMusic(true);closeModal();P.it=it;P.dur=it.duration||0;P.mode=(it.direct||!S.transcode)?'direct':txMode();P.hevc=P.mode==='tx'&&hevcPass(it);P.sub=-1;
   const p=prog(it.id);if(start==null)start=p&&!p.done&&p.pos>20?Math.max(0,p.pos-5):0;
   $('#ptitle').replaceChildren(it.show?h('span',{},h('b',{},it.show),h('small',{},`S${it.season}:E${it.episode} ${it.epTitle||''}`)):h('b',{},it.title));
   const subs=$('#psubs');subs.replaceChildren(h('option',{value:-1},'Subtitles: Off'),...(it.subs||[]).map((l,i)=>h('option',{value:i},l)));$('#psubw').classList.toggle('hidden',!(it.subs||[]).length);
@@ -2773,24 +2946,25 @@ function playVideo(it,start){stopMusic(true);closeModal();P.it=it;P.dur=it.durat
   loadVid(start);poke()}
 function nextEp(it){if(!it.show)return null;const s=S.showByKey['show:'+it.show];return s.eps[s.eps.indexOf(it)+1]||null}
 function loadVid(t){spin(true);[...vid.querySelectorAll('track')].forEach(x=>x.remove());
-  if(P.mode==='direct'){P.off=0;P.pending=t;vid.src='/media/'+P.it.id}else{P.off=t;P.pending=0;vid.src=`/transcode/${P.it.id}?t=${t.toFixed(1)}${P.hevc?'&hevc='+HEVC:''}`}
-  $('#pmode').textContent=P.mode==='tx'&&!P.hevc?'Transcoding':'';
+  if(P.mode==='direct'){P.off=0;P.pending=t;vid.src='/media/'+P.it.id}
+  else if(P.mode==='hls'){P.off=0;P.pending=t;vid.src=`/hls/${P.it.id}/index.m3u8`}else{P.off=t;P.pending=0;vid.src=`/transcode/${P.it.id}?t=${t.toFixed(1)}${P.hevc?'&hevc='+HEVC:''}`}
+  $('#pmode').textContent=(P.mode==='tx'&&!P.hevc)||P.mode==='hls'?'Transcoding':'';
   if(P.sub>=0)addSub(P.sub);vid.play().catch(()=>{})}
 function addSub(i){[...vid.querySelectorAll('track')].forEach(x=>x.remove());P.sub=i;if(i<0)return;
   const tr=h('track',{kind:'subtitles',default:true,src:`/subs/${P.it.id}/${i}?offset=${P.off.toFixed(2)}`,label:'sub'});vid.append(tr);
   tr.addEventListener('load',()=>{for(const t of vid.textTracks)t.mode='showing'});setTimeout(()=>{for(const t of vid.textTracks)t.mode='showing'},300)}
 const cur=()=>P.off+(vid.currentTime||0);
-function seekTo(t){t=Math.max(0,Math.min(t,(P.dur||1e9)-1));if(P.mode==='direct')vid.currentTime=t;else loadVid(t)}
+function seekTo(t){t=Math.max(0,Math.min(t,(P.dur||1e9)-1));if(P.mode==='direct'||P.mode==='hls')vid.currentTime=t;else loadVid(t)}
 function spin(on){$('#pspin').classList.toggle('hidden',!on)}
 function msg(t,ms=2500){const m=$('#pmsg');m.textContent=t;m.classList.remove('hidden');clearTimeout(m._t);m._t=setTimeout(()=>m.classList.add('hidden'),ms)}
 // HEVC passthrough failed (an error, or audio with no picture): convert it after all
 function hevcFail(){const t=cur();P.hevc=false;msg('Converting this file for your browser…');loadVid(t)}
-vid.addEventListener('loadedmetadata',()=>{if(P.mode==='tx'&&P.hevc&&!vid.videoWidth)return hevcFail();if(P.mode==='direct'){if(isFinite(vid.duration))P.dur=vid.duration;if(P.pending){vid.currentTime=P.pending;P.pending=0}}adsUI()});
+vid.addEventListener('loadedmetadata',()=>{if(P.mode==='tx'&&P.hevc&&!vid.videoWidth)return hevcFail();if(P.mode==='direct'||P.mode==='hls'){if(isFinite(vid.duration))P.dur=vid.duration;if(P.pending){vid.currentTime=P.pending;P.pending=0}}adsUI()});
 vid.addEventListener('waiting',()=>spin(true));vid.addEventListener('playing',()=>{if(P.mode==='tx'&&P.hevc&&!vid.videoWidth)return hevcFail();spin(false);playIcon()});
 vid.addEventListener('canplay',()=>spin(false));
 vid.addEventListener('pause',()=>{playIcon();saveProg(true)});
 vid.addEventListener('error',()=>{if(!P.it||!vid.getAttribute('src'))return;spin(false);
-  if(P.mode==='direct'&&S.transcode){const t=cur();P.mode='tx';msg('Converting this file for your browser…');loadVid(t)}
+  if(P.mode==='direct'&&S.transcode){const t=cur();P.mode=txMode();P.hevc=P.mode==='tx'&&hevcPass(P.it);msg('Converting this file for your browser…');loadVid(t)}
   else if(P.mode==='tx'&&P.hevc)hevcFail()
   else msg(S.transcode?'Sorry, this file could not be played.':'Your browser cannot play this format and ffmpeg is not installed on the server.',6000)});
 vid.addEventListener('timeupdate',()=>{const t=cur();adTick(t);if(!P.drag&&P.dur)seekShow(t);ptimeShow(t);$('#ptdur').textContent=fmtT(P.dur);if(Date.now()-P.lastSave>10000)saveProg()});
@@ -3114,6 +3288,7 @@ def main():
     Handler.quiet = a.quiet
     Handler.quality = a.quality
     Handler.ads = AdFinder(lib, a.ads)
+    Handler.hls = HlsJobs(XDG_CACHE / "hls")
     Handler.ads.busy = lambda: Handler.converting > 0
 
     log(f"Homeflix {VERSION} starting (Python {sys.version.split()[0]}, {sys.platform})")
@@ -3152,10 +3327,14 @@ def main():
     if a.host in ("0.0.0.0", "::", ""):
         for ip in lan_ips():
             log(f"  Your network: http://{ip}:{a.port}")
+    if not WINDOWS:  # "kill" or stopping the service: shut down tidily, like Ctrl+C
+        signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         log("bye")
+    finally:
+        Handler.hls.stop_all()  # don't leave ffmpeg running (or paused) after Homeflix stops
 
 
 if __name__ == "__main__":
