@@ -29,7 +29,7 @@ You already own the movies, the shows and the albums. They're sitting in a folde
 It's one file and uses nothing outside the Python standard library. You can read all of it in an afternoon, and it runs on whatever machine already has your media on it.
 
 <p align="center">
-  <img src="docs/screenshots/player.jpg" alt="Homeflix video player mid-episode, showing the seek bar, skip, volume and next-episode controls" width="100%">
+  <img src="docs/screenshots/player.jpg" alt="Homeflix video player on a computer, paused mid-episode: the show title above a red progress bar with the time left, and a row of big round buttons (play, back 10 s, forward 10 s, volume, subtitles, next episode, full screen) with Play highlighted" width="100%">
   <br><sub>The player resumes where you left off, and the controls fade away while you watch.</sub>
 </p>
 
@@ -110,6 +110,9 @@ It's one file and uses nothing outside the Python standard library. You can read
 
 ### Big controls on phones and tablets
 Big **back 30 s · play/pause · forward 30 s** buttons in the middle of the picture, a progress bar you can **tap anywhere to jump** (or drag), and large **mute** and **full screen** buttons. Tap the picture to show or hide the controls.
+
+### TV-style controls on computers
+In a desktop browser the player looks like a TV app: the show and episode in large text above a thick progress bar showing the **time left**, and a row of **big round buttons**. The button under the mouse turns white and shows its name. Point at the speaker for the volume slider.
 
 ### Keyboard-first player
 `Space` play/pause · `←` `→` skip 10s · `↑` `↓` volume · `F` full screen · `M` mute · `N` next episode · `S` skip ad · `Esc` back
