@@ -33,6 +33,7 @@ program. If not, see <https://www.gnu.org/licenses/>.
 import argparse
 import hashlib
 import hmac
+import html
 import http.server
 import json
 import math
@@ -54,7 +55,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.11.0"
+VERSION = "1.12.0"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -261,6 +262,45 @@ def tidy(s: str) -> str:
     return s.strip(" -[](){}")
 
 
+# -- loose songs (no album tag, not in an album folder): names and artists from the file name ---------
+_FULLWIDTH = str.maketrans({"｜": "|", "：": ":", "⧸": "/", "＊": "*", "＂": '"', "？": "?", "–": "-", "—": "-", "＃": "#"})
+_DL_ID_RE = re.compile(r"\s*\[(?:[A-Za-z0-9_-]{11}|\d{6,})\]\s*$")  # YouTube / SoundCloud download ids
+_ARTIST_SEPS = [r"\s+-\s+", r"\s*\|\s*", r"\s+@\s*", r"\s*:\s+", r"\s+(?=(?i:live)\b)", r"\s+(?=at\s)", r"\s{2,}",
+                r"\s+(?=(?i:(?:full |dj )?set)\b)", r"\s+(?=Space Miami\b)", r"\s+(?=pres\.?\s)"]
+
+
+def _loose_base(s):
+    s = html.unescape(s.translate(_FULLWIDTH))
+    if "_-_" in s or (s.count("_") >= 2 and " " not in s.strip()):
+        s = s.replace("_", " ")
+    return _DL_ID_RE.sub("", s)
+
+
+def loose_title(stem):
+    """A downloaded file's name, tidied: "JOHN SUMMIT ｜ Live @ AMF 2025 [2199394527]" -> "JOHN SUMMIT | Live @ AMF 2025"."""
+    s = _loose_base(stem)
+    s = re.sub(r"(?i)\s*[-|]?\s*(?:opus\s*)?\b(?:\d{3,4}p|4k|hd)\b\s*$", "", s)
+    s = re.sub(r"(?i)\s*-\s*opus$", "", s)
+    s = re.sub(r"(?i)\s*-?\s*\baudio(?: only)?$", "", s)
+    return re.sub(r"[ \t]+", " ", s).strip(" -|·") or stem
+
+
+def loose_artist(stem):
+    """The artist at the start of a downloaded file's name (before " - ", " | ", " @ ", ": ", "Live", ...), or None."""
+    s = _loose_base(stem)
+    cut = min((m.start() for m in (re.search(p, s) for p in _ARTIST_SEPS) if m and m.start() > 1), default=None)
+    if cut is None:
+        return None
+    a = re.sub(r"\s*#\d+$", "", s[:cut].strip(" -|")).replace("_", " ").strip()
+    return a if 1 < len(a) <= 60 else None
+
+
+def loose_match_key(name):
+    """For pairing an audio file with the same set as a video: name without extension, id and quality."""
+    s = loose_title(os.path.splitext(name)[0]).lower()
+    return re.sub(r"\s+", " ", s).strip()
+
+
 def clean_title(stem: str):
     """Return (title, year) from a release-style file name."""
     s = " " + re.sub(r"[._]+", " ", stem) + " "
@@ -376,6 +416,7 @@ class Library:
                             self._save_probe_cache()
                 self._save_probe_cache()
             with self.lock:
+                self.tidy_loose(list(found.values()))
                 self.version += 1
             nv = sum(1 for i in found.values() if i["kind"] == "video")
             log(f"Library: {nv} videos, {len(found) - nv} audio files ({time.time() - t0:.1f}s)")
@@ -446,6 +487,7 @@ class Library:
             it.update(title=title or stem, artist=artist or "Unknown Artist",
                       albumArtist=artist or "Unknown Artist", album=album or "Singles",
                       track=track, disc=disc, year=None, genre=None)
+            it["_loose"] = not album  # no album folder: named from its file (see tidy_loose)
             for n in IMG_NAMES:
                 for ext in (".jpg", ".jpeg", ".png", ".webp"):
                     if n + ext in lower:
@@ -526,11 +568,14 @@ class Library:
         else:
             ac = (a or {}).get("codec") or ""
             it["direct"] = it["_ext"] in WEB_AUDIO_EXT and (ac in WEB_ACODECS or ac.startswith("pcm_") or not ac)
-            t = d.get("tags", {})
+            t = {k: html.unescape(v) for k, v in d.get("tags", {}).items()}
+            if t.get("album"):
+                it["_loose"] = False
             if t.get("title"):
                 it["title"] = t["title"]
             if t.get("artist"):
                 it["artist"] = t["artist"]
+                it["_tagartist"] = t["artist"]
             if t.get("album"):
                 it["album"] = t["album"]
             it["albumArtist"] = t.get("album_artist") or it["artist"]
@@ -612,6 +657,10 @@ class Library:
     def thumb(self, it):
         if it.get("_img") and os.path.isfile(it["_img"]):
             return it["_img"]
+        if it.get("art") == "video":  # a downloaded set without art: the picture of the same set's video
+            v = self.get(it["_video"])
+            if v:
+                return self.thumb(v)
         out = self.thumb_dir / f"{it['id']}.jpg"
         miss = self.thumb_dir / f"{it['id']}.none"
         if self._fresh(out, it):
@@ -637,6 +686,48 @@ class Library:
         except OSError:
             pass
         return str(out)
+
+    def tidy_loose(self, items):
+        """Name loose songs (no album tag, not in an album folder: typically downloaded DJ sets) from
+        their files: tidy title, artist from the name (spellings like "JOHN SUMMIT" and "John_Summit"
+        merged, known artists found at the start of a name), each its own "album", and a matching
+        video of the same set used for its picture."""
+        songs = [it for it in items if it["kind"] == "audio" and it.get("_loose")]
+        if not songs:
+            return
+        variants = {}
+        for it in items:
+            if it["kind"] == "audio" and not it.get("_loose") and it.get("artist") not in (None, "Unknown Artist"):
+                variants.setdefault(it["artist"].lower().strip(), set()).add(it["artist"].strip())
+        for it in songs:
+            stem = Path(it["file"]).stem
+            it["_ltitle"] = loose_title(stem)
+            a = loose_artist(stem) or it.get("_tagartist")
+            it["_lartist"] = a.strip() if a else None
+            if it["_lartist"]:
+                variants.setdefault(it["_lartist"].lower(), set()).add(it["_lartist"])
+        known = sorted((k for k in variants if len(k) > 2), key=len, reverse=True)
+        nicest = lambda vs: sorted([v for v in vs if v != v.upper()] or vs, key=len)[0]
+        videos = {}
+        for it in items:
+            if it["kind"] == "video" and it.get("_v"):
+                videos.setdefault((str(Path(it["_path"]).parent), loose_match_key(it["file"])), it["id"])
+        for it in songs:
+            title, a = it["_ltitle"], it["_lartist"]
+            if not a:
+                a = next((k for k in known if title.lower().startswith(k + " ")), None)
+            artist = nicest(variants[a.lower()]) if a else "Unknown Artist"
+            short = title
+            m = re.match(re.escape(artist).replace("\\ ", "[ _]+") + r"(?:\s*[-|:@]\s*|\s+)(.+)$", title, re.I)
+            if m and len(m.group(1).strip(" -|:")) >= 4:
+                short = m.group(1).strip(" -|:")
+                short = short[:1].upper() + short[1:]
+            years = re.findall(r"\b(19[5-9]\d|20[0-4]\d)\b", title)
+            it.update(title=short, artist=artist, albumArtist=artist, album=short, loose=True)
+            if years and not it.get("year"):
+                it["year"] = int(years[-1])
+            it["_video"] = videos.get((str(Path(it["_path"]).parent), loose_match_key(it["file"])))
+            it["art"] = "video" if it["_video"] and not it.get("_img") and not it.get("_cover") else None
 
     def _gen_thumb(self, it, out: Path):
         pre = [NICE, "-n", "15"] if NICE else []
@@ -2881,6 +2972,14 @@ main{padding-bottom:120px}
 .art .ph{padding:10px;font-weight:800;font-size:clamp(13px,1.2vw,18px);text-shadow:0 2px 6px #0007;line-height:1.15}
 .art img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .3s}
 .art.loaded img{opacity:1}
+/* loose songs (downloaded sets) without a picture: a cover with the DJ's name, and the set's name below */
+.art .gen{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:space-between;padding:9% 9% 8%;text-align:left;color:#fff;overflow:hidden}
+.art .gen:before{content:"";position:absolute;right:-18%;bottom:-18%;width:75%;aspect-ratio:1;border-radius:50%;border:clamp(6px,1.4vw,14px) solid #ffffff1f;box-shadow:0 0 0 clamp(10px,2.4vw,26px) #ffffff0d}
+.art .gen b{position:relative;font-size:clamp(17px,1.9vw,30px);font-weight:900;line-height:1.02;letter-spacing:-.3px;text-transform:uppercase;text-shadow:0 2px 10px #0006;word-break:break-word}
+.art .gen i{position:relative;font-style:normal;font-size:clamp(14px,1.2vw,20px);font-weight:700;opacity:.92;line-height:1.18;max-height:4.75em;overflow:hidden;text-shadow:0 1px 6px #0006}
+.art .gen.long b{font-size:clamp(14px,1.35vw,21px)}.art .gen.long i{max-height:3.6em}
+.mfart .art .gen b{font-size:clamp(24px,6vw,40px)}.mfart .art .gen i{font-size:clamp(16px,4vw,24px)}
+.art.vf.loaded:after{content:"▶ from the video";position:absolute;left:6px;bottom:6px;z-index:2;font-size:10px;background:#000a;padding:2px 6px;border-radius:3px;color:#ddd}
 .art .badge{position:absolute;left:6px;top:6px;z-index:2;background:var(--red);font-size:10px;font-weight:800;padding:2px 5px;border-radius:2px}
 .pbar{position:absolute;left:8px;right:8px;bottom:8px;height:3px;background:#4d4d4d;z-index:2;border-radius:2px}
 .pbar i{display:block;height:100%;background:var(--red)}
@@ -3310,12 +3409,20 @@ const post=(p,b)=>api(p,{method:'POST',headers:{'Content-Type':'application/json
 function fmtT(s){s=Math.max(0,Math.floor(s||0));const hh=Math.floor(s/3600),m=Math.floor(s%3600/60),ss=s%60;return(hh?hh+':'+String(m).padStart(2,'0'):m)+':'+String(ss).padStart(2,'0')}
 function fmtDur(s){if(!s)return'';const m=Math.max(1,Math.round(s/60));return m>=60?Math.floor(m/60)+'h '+(m%60)+'m':m+'m'}
 function hash(s){let x=0;for(const c of String(s))x=(x*31+c.charCodeAt(0))|0;return Math.abs(x)}
+// a downloaded set's cover: its own picture or its video's if there is one, else the DJ's name on the
+// artist's colour (a slightly different shade per set)
+function looseArt(it,sq,badge){const H=(hash(it.artist)%360+(hash(it.title)%7-3)*9+360)%360,A=135+(hash(it.title)%4)*30;
+  const w=h('div',{class:'art'+(sq?' sq':'')+(it.art==='video'?' vf':''),style:`background:linear-gradient(${A}deg,hsl(${H} 70% ${42+hash(it.title)%10}%),hsl(${(H+40)%360} 75% 20%))`},
+    h('div',{class:'gen'+(it.artist.length>16?' long':'')},h('b',{},it.artist),h('i',{},it.title)));
+  if(badge)w.append(h('span',{class:'badge'},badge));
+  const i=h('img',{loading:'lazy',alt:'',src:'/thumb/'+it.id+'?v='+it.added});i.onload=()=>w.classList.add('loaded');i.onerror=()=>i.remove();w.append(i);return w}
 function grad(s){const a=hash(s)%360;return`linear-gradient(135deg,hsl(${a} 55% 32%),hsl(${(a+40)%360} 60% 14%))`}
 function res(it){const w=it.width||0,hh=it.height||0;if(w>=3200||hh>=1900)return'4K';if(w>=1800||hh>=1000)return'HD';if(w>=1200||hh>=700)return'720p';return w?'SD':''}
 const isNew=it=>Date.now()/1000-it.added<14*86400;
 
 function meta(...k){return h('div',{class:'meta'},k.flat().filter(x=>x!=null&&x!==''&&x!==false).map(x=>x.nodeType?x:h('span',{},x)))}
-function art(id,title,sq,badge){const w=h('div',{class:'art'+(sq?' sq':''),style:'background:'+grad(title)},h('span',{class:'ph'},title));
+function art(id,title,sq,badge){const it=id&&S.byId[id];if(it&&it.loose)return looseArt(it,sq,badge);
+  const w=h('div',{class:'art'+(sq?' sq':''),style:'background:'+grad(title)},h('span',{class:'ph'},title));
   if(badge)w.append(h('span',{class:'badge'},badge));
   if(id){const it=S.byId[id],i=h('img',{loading:'lazy',alt:'',src:'/thumb/'+id+(it?'?v='+it.added:'')});i.onload=()=>w.classList.add('loaded');i.onerror=()=>i.remove();w.append(i)}return w}
 

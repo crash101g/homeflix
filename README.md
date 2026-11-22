@@ -75,6 +75,7 @@ It's one file and uses nothing outside the Python standard library. You can read
 
 ### A real music player, too
 - Albums are built from your tags, with folder structure as the fallback.
+- **Downloaded sets and loose songs** (no album tag, not in an album folder) get a clean name from the file: the download ID like `[2135273388]` and leftovers like "audio only" are removed, the DJ is worked out from the name (`John Summit - Live @ AMF 2025` → **Live @ AMF 2025** by **John Summit**), and different spellings of the same artist are merged. Each gets its own cover: its built-in art, a picture from the same set's video if you have it, or the DJ's name on a colour that's consistent for each artist.
 - Cover art is taken from embedded artwork or `cover.jpg` / `folder.jpg`.
 - A **persistent player bar** with shuffle and repeat that keeps playing while you browse.
 - **Lock-screen and media-key controls** on phones.
