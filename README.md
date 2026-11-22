@@ -64,6 +64,9 @@ It's one file and uses nothing outside the Python standard library. You can read
 ### Messy filenames, cleaned up
 - `Movie.2010.1080p.BluRay.x264-YIFY` shows up as ***Movie (2010)***.
 - `Inception (2010)/movie.mkv` uses the folder name.
+- Names written in words keep every word: `Above & Beyond： Live at The Hollywood Bowl (Full 2016 Concert) [abcdefghijk].mp4` shows up as ***Live at The Hollywood Bowl (Full 2016 Concert)*** by **Above & Beyond**. Download IDs, recorder prefixes like `vlc-record-…`, and leftovers like `- 720p` are removed, and `Superman - 2025` gets the year 2025.
+- Concert and DJ-set videos in your music folders show the DJ underneath when their name starts with an artist from your music, and sort by DJ.
+- Two copies of the same video are labelled with their quality (**1080p**, **720p**, **4K**) so you can tell them apart.
 - Thumbnails are grabbed from each video automatically in the background. Drop a `poster.jpg` next to a file to use your own art.
 
 ### Plays (almost) anything
