@@ -32,6 +32,7 @@ program. If not, see <https://www.gnu.org/licenses/>.
 """
 import argparse
 import hashlib
+import fnmatch
 import hmac
 import html
 import http.server
@@ -55,7 +56,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.14.0"
+VERSION = "1.16.0"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -403,8 +404,11 @@ class Library:
                     log(f"WARNING: library folder not found: {root}")
                     continue
                 for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
-                    dirnames[:] = [d for d in dirnames if not d.startswith(".")]
                     d = Path(dirpath)
+                    if ".homeflixignore" in filenames or self.excluded(d):  # a folder you don't want shown
+                        dirnames[:] = []
+                        continue
+                    dirnames[:] = [n for n in dirnames if not n.startswith(".")]
                     lower = {f.lower(): f for f in filenames}
                     for fn in filenames:
                         if fn.startswith("."):
@@ -416,6 +420,8 @@ class Library:
                         if kind == "video" and re.search(r"(?i)\bsample\b", fn):
                             continue
                         p = d / fn
+                        if self.excluded(p):
+                            continue
                         try:
                             it = self._base_item(p, root, kind, filenames, lower)
                         except OSError:
@@ -713,6 +719,18 @@ class Library:
             pass
         return str(out)
 
+    def excluded(self, path: Path) -> bool:
+        """Kept out of Homeflix by HOMEFLIX_EXCLUDE / --exclude: a folder (and everything in it), a file,
+        or a pattern: "*sample*" matches names, "*/Kids/*" whole paths."""
+        sp = str(path)
+        for e in getattr(self, "excludes", ()):
+            if any(c in e for c in "*?["):
+                if fnmatch.fnmatch(path.name.lower(), e.lower()) or ("/" in e or os.sep in e) and fnmatch.fnmatch(sp.lower(), e.lower()):
+                    return True
+            elif sp == e or sp.startswith(e.rstrip(os.sep) + os.sep):
+                return True
+        return False
+
     def tidy_loose(self, items):
         """Name loose songs (no album tag, not in an album folder: typically downloaded DJ sets) from
         their files: tidy title, artist from the name (spellings like "JOHN SUMMIT" and "John_Summit"
@@ -949,6 +967,7 @@ class State:
         self.data.setdefault("progress", {})
         self.data.setdefault("mylist", {})
         self.data.setdefault("music", {})  # each profile's music queue and spot, so it can carry on later
+        self.data.setdefault("hidden", {"everyone": [], "profiles": {}})  # things hidden from the app
         if not self.data["profiles"]:
             self.data["profiles"].append({"id": "p1", "name": "Me", "color": self.COLORS[0]})
             self._save()
@@ -980,6 +999,7 @@ class State:
             self.data["progress"].pop(pid, None)
             self.data["mylist"].pop(pid, None)
             self.data["music"].pop(pid, None)
+            self.data["hidden"]["profiles"].pop(pid, None)
             self._save()
 
     def _valid(self, pid):
@@ -988,7 +1008,28 @@ class State:
     def get(self, pid):
         with self.lock:
             return {"progress": self.data["progress"].get(pid, {}), "mylist": self.data["mylist"].get(pid, []),
-                    "music": self.data["music"].get(pid)}
+                    "music": self.data["music"].get(pid),
+                    "hidden": {"everyone": list(self.data["hidden"]["everyone"]),
+                               "me": list(self.data["hidden"]["profiles"].get(pid, []))}}
+
+    def set_hidden(self, pid, key, scope, on):
+        """Hide (or unhide) a video, show ("show:<name>"), album ("album:<artist>\x01<title>") or song, for
+        everyone or just for one profile."""
+        key = str(key)[:600]
+        with self.lock:
+            if not self._valid(pid):
+                raise ValueError("bad profile")
+            h = self.data["hidden"]
+            lst = h["everyone"] if scope == "everyone" else h["profiles"].setdefault(pid, [])
+            if on and key not in lst:
+                lst.append(key)
+            elif not on and key in lst:
+                lst.remove(key)
+            self._save()
+
+    def hidden_for_everyone(self):
+        with self.lock:
+            return set(self.data["hidden"]["everyone"])
 
     def set_music(self, pid, b):
         """The music bar's queue, current song, spot in it and shuffle/repeat. An empty queue clears it."""
@@ -2016,7 +2057,8 @@ class Subsonic:
 
     def library(self):
         """(songs, albums, artists) dicts keyed by id; rebuilt when the library changes."""
-        ver = self.lib.version
+        hid = Handler.state.hidden_for_everyone() if Handler.state else set()
+        ver = (self.lib.version, frozenset(hid))
         if self._cache[0] == ver:
             return self._cache[1]
         with self.lib.lock:
@@ -2029,6 +2071,8 @@ class Subsonic:
                 title, artist, aartist, album = (it.get("title") or Path(it["file"]).stem, it.get("artist") or "Music Videos",
                                                  "Music Videos", self.VIDEO_ALBUM)
             else:
+                continue
+            if it["id"] in hid or f"album:{aartist}\u0001{album}" in hid:  # hidden for everyone in the app
                 continue
             arid = self._id("ar-", aartist or "Unknown Artist")
             alid = self._id("al-", f"{aartist}\u0001{album}")
@@ -2633,6 +2677,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else:
                 self.state.set_progress(b["profile"], b["id"], b.get("pos", 0), b.get("dur", 0), b.get("done"))
             return self.send_json({"ok": True})
+        if path == "/api/hidden":
+            self.state.set_hidden(b["profile"], b["key"], b.get("scope"), bool(b.get("on")))
+            return self.send_json({"ok": True})
         if path == "/api/music":
             self.state.set_music(b["profile"], b)
             return self.send_json({"ok": True})
@@ -2958,16 +3005,31 @@ def lan_ips():
 # ----------------------------------------------------------------------------
 # Front-end
 # ----------------------------------------------------------------------------
-FAVICON = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#141414"/><path d="M18 10h10l18 44H36z" fill="#e50914"/><path d="M18 10h10v44H18zM36 10h10v44H36z" fill="#b20710"/><path d="M18 10h10l18 44H36z" fill="#e50914"/></svg>"""
+def logo_mark(word="HOMEFLIX", curve=0.38):
+    """The Homeflix logo: a roof over the "HO", and letters that grow taller towards both ends so the
+    bottom edge arches upward in the middle."""
+    half = (len(word) - 1) / 2
+    letters = "".join(f'<i style="transform:scaleY({1 + curve * (abs(i - half) / half) ** 2:.3f})">{c}</i>'
+                      for i, c in enumerate(word))
+    roof = ('<svg class="roof" viewBox="0 0 60 16" preserveAspectRatio="none" aria-hidden="true"><path d="M2 15 30 2l28 13" '
+            'fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/></svg>')
+    return f'<span class="mark" aria-label="Homeflix">{roof}<span class="lw" aria-hidden="true">{letters}</span></span>'
+
+
+LOGO_CSS = (".mark{position:relative;display:inline-block;padding-top:.3em;padding-bottom:.42em;line-height:1}"
+            ".mark .roof{position:absolute;left:-.08em;top:-.04em;width:1.55em;height:.42em}"
+            ".mark .lw{display:inline-flex;align-items:flex-start}.mark i{font-style:normal;display:inline-block;transform-origin:50% 0}")
+
+FAVICON = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#141414"/><path d="M14 27 32 13l18 14" fill="none" stroke="#e50914" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M20 30h7v9h10v-9h7v24h-7V45H27v9h-7z" fill="#e50914"/></svg>"""
 
 LOGIN_HTML = r"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Homeflix - Sign in</title><link rel="icon" href="/favicon.svg">
 <style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#000 radial-gradient(ellipse at top,#3a0508,#000 70%);font-family:Helvetica,Arial,sans-serif;color:#fff}
-form{background:rgba(0,0,0,.75);padding:48px 56px;border-radius:6px;width:300px}h1{color:#e50914;letter-spacing:2px;margin:0 0 28px;font-size:34px}
+form{background:rgba(0,0,0,.75);padding:48px 56px;border-radius:6px;width:300px}h1{color:#e50914;letter-spacing:2px;margin:0 0 24px;font-size:34px;font-weight:900}__LOGO_CSS__
 input{width:100%;box-sizing:border-box;padding:14px;border-radius:4px;border:0;background:#333;color:#fff;font-size:16px;margin-bottom:16px}
 button{width:100%;padding:14px;border:0;border-radius:4px;background:#e50914;color:#fff;font-size:16px;font-weight:700;cursor:pointer}
 .bad{color:#e87c03;font-size:14px;margin-bottom:12px;display:none}.ver{color:#777;font-size:12px;text-align:center;margin-top:18px}</style></head><body>
-<form method="post" action="/login"><h1>HOMEFLIX</h1><div class="bad" id="bad">Incorrect password.</div>
+<form method="post" action="/login"><h1>__LOGO__</h1><div class="bad" id="bad">Incorrect password.</div>
 <input type="password" name="password" placeholder="Password" autofocus required><button>Sign In</button><div class="ver">Homeflix v__VERSION__</div></form>
 <script>if(location.search.includes('bad'))document.getElementById('bad').style.display='block'</script></body></html>"""
 
@@ -2988,7 +3050,8 @@ a{color:inherit}
 #nav{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;align-items:center;gap:22px;padding:14px 4%;background:linear-gradient(#000c,#0000);transition:background .3s}
 #nav.solid{background:#141414}
 .logo{color:var(--red);font-weight:900;font-size:28px;letter-spacing:1px;cursor:pointer;user-select:none;text-shadow:0 2px 6px #0008}
-.logo .ver{color:#aaa;font-size:11px;font-weight:600;letter-spacing:0;margin-left:6px;vertical-align:super;text-shadow:none}
+.logo .ver{color:#aaa;font-size:11px;font-weight:600;letter-spacing:0;margin-left:6px;vertical-align:top;position:relative;top:.55em;text-shadow:none}
+__LOGO_CSS__
 #links{display:flex;gap:18px;font-size:14px}
 #links a{text-decoration:none;color:#e5e5e5;cursor:pointer}
 #links a.on{color:#fff;font-weight:700}
@@ -3087,6 +3150,29 @@ body.mplay #modal{padding-bottom:110px}
 .ep .t{flex:1;min-width:0}.ep .t b{display:block;margin-bottom:4px}
 .ep .d{color:var(--mut);font-size:14px}
 .trk{display:grid;grid-template-columns:34px 1fr auto;gap:12px;padding:9px 10px;border-radius:4px;cursor:pointer;align-items:center}
+/* hiding things from the app: the Hide button and its menu, the song-row icon, the Undo message, the Hidden list */
+.hidewrap{position:relative;display:inline-block}
+.hidebtn{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 18px;border-radius:22px;border:1.5px solid #ffffff66;background:#0006;color:#ddd;font-weight:700;font-size:15px;cursor:pointer}
+.hidebtn:hover,.hidebtn.open{background:#fff;color:#000}.hidebtn svg,.trk .hx svg{width:22px;height:22px;fill:currentColor}
+.hidemenu{position:absolute;left:0;top:100%;z-index:9;margin-top:8px;background:#1f1f1f;border:1px solid #3a3a3a;border-radius:10px;box-shadow:0 12px 40px #000c;padding:6px;min-width:300px}
+.hidemenu button{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;padding:12px 14px;border:0;background:none;color:#fff;border-radius:7px;cursor:pointer;text-align:left}
+.hidemenu button:hover,.hidemenu button:focus-visible{background:#ffffff1a;outline:0}.hidemenu b{font-size:15px}.hidemenu span{font-size:13px;color:#aaa}
+.trk{position:relative;padding-right:44px}.trk .hx{position:absolute;right:6px;top:50%;transform:translateY(-50%);opacity:0;color:#bbb;border:0;background:none;cursor:pointer;padding:6px;display:grid}
+.trk:hover .hx,.trk .hx:focus-visible,.trk .hx.open{opacity:1}.trk .hx:hover{color:#fff}
+@media (hover:none){.trk .hx{opacity:.45}}
+.trk .hidemenu{left:auto;right:0}
+/* phones: the Hide menu as a panel along the bottom of the screen */
+@media (max-width:600px){.hidemenu,.trk .hidemenu{position:fixed;left:10px;right:10px;top:auto;bottom:max(10px,env(safe-area-inset-bottom));margin:0;min-width:0;z-index:120;padding:8px}
+  .hidemenu button{padding:16px}.hidemenu b{font-size:17px}.hidemenu span{font-size:14px}}
+.toast{position:fixed;left:50%;bottom:40px;transform:translateX(-50%);background:#222;border:1px solid #444;border-radius:8px;padding:14px 18px;display:flex;gap:18px;align-items:center;z-index:95;font-size:15px;box-shadow:0 8px 30px #000a;max-width:90vw}
+.toast button{border:0;background:none;color:#e50914;font-weight:800;font-size:15px;cursor:pointer}
+body.mplay .toast{bottom:170px}
+.hidlink{margin-left:10px;color:#bbb;font-size:13px;text-decoration:underline;cursor:pointer;background:none;border:0}
+.hidpage .hint{margin:0 4% 14px;color:#aaa;font-size:14px}
+.hidpage .hrow{margin:0 4%;display:flex;align-items:center;gap:16px;padding:12px 14px;border-bottom:1px solid #2a2a2a}
+.hidpage .hrow .k{width:72px;font-size:11px;font-weight:800;letter-spacing:1px;color:#999}.hidpage .hrow .n{flex:1;min-width:0}.hidpage .hrow .n b{display:block}.hidpage .hrow .n span{font-size:13px;color:#999}
+.hidpage .scope{font-size:12px;font-weight:700;padding:4px 10px;border-radius:12px;background:#ffffff14;color:#ccc;white-space:nowrap}.hidpage .scope.me{background:#e5091433;color:#ffb3b6}
+.hidpage .ub{height:38px;padding:0 18px;border-radius:19px;border:0;background:#ffffff22;color:#fff;font-weight:700;cursor:pointer}.hidpage .ub:hover{background:#fff;color:#000}
 .trk:hover{background:#2a2a2a}
 .trk .n{color:var(--mut);text-align:right}
 .trk.on{color:#46d369}
@@ -3371,7 +3457,8 @@ body.mplay.deskbar #modal{padding-bottom:160px}
 .gbtn:hover{color:#fff;border-color:#fff}
 @media (max-width:800px){
  #links{display:none}#nav.menu #links{display:flex;position:absolute;top:60px;left:0;right:0;flex-direction:column;background:#141414;padding:14px 4%}
- #menuBtn{display:inline-block!important}
+ #menuBtn{display:grid!important;place-items:center;width:44px;height:44px;padding:0;opacity:1;border-radius:8px;color:#fff;-webkit-tap-highlight-color:transparent}
+ #menuBtn svg{width:30px;height:30px;fill:currentColor}#menuBtn:active{background:#ffffff22}
  #search{flex-basis:130px}
  .hero{height:60vh}.hero .info{bottom:16%}
  .rows{margin-top:-6vh}
@@ -3392,8 +3479,8 @@ body.mplay.deskbar #modal{padding-bottom:160px}
 <body>
 <div id="gate" class="hidden"></div>
 <header id="nav">
-  <button id="menuBtn" class="iconbtn" style="display:none" aria-label="Menu">&#9776;</button>
-  <div class="logo" data-go="home" title="Homeflix __VERSION__">HOMEFLIX<span class="ver">v__VERSION__</span></div>
+  <button id="menuBtn" class="iconbtn" style="display:none" aria-label="Menu"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="2.6" rx="1.3"/><rect x="3" y="10.7" width="18" height="2.6" rx="1.3"/><rect x="3" y="16.4" width="18" height="2.6" rx="1.3"/></svg></button>
+  <div class="logo" data-go="home" title="Homeflix __VERSION__">__LOGO__<span class="ver">v__VERSION__</span></div>
   <nav id="links">
     <a data-go="home">Home</a><a data-go="shows">Shows</a><a data-go="movies">Movies</a>
     <a data-go="music">Music</a><a data-go="recent">New &amp; Popular</a><a data-go="mylist">My List</a>
@@ -3508,8 +3595,12 @@ function art(id,title,sq,badge){const it=id&&S.byId[id];if(it&&it.loose)return l
   if(id){const it=S.byId[id],i=h('img',{loading:'lazy',alt:'',src:'/thumb/'+id+(it?'?v='+it.added:'')});i.onload=()=>w.classList.add('loaded');i.onerror=()=>i.remove();w.append(i)}return w}
 
 /* ---------- data ---------- */
+// things hidden from the app (for everyone, or just for this profile) are left out of every list
+const hidKey=k=>!!S.hidden&&(S.hidden.everyone.has(k)||S.hidden.me.has(k));
+const isHidden=it=>hidKey(it.id)||(!!it.show&&hidKey('show:'+it.show))||(it.kind==='audio'&&hidKey('album:'+it.albumArtist+'\u0001'+it.album));
+function regroup(){S.items=(S.all||S.items).filter(i=>!isHidden(i));group();render()}
 function group(){
-  S.byId={};for(const it of S.items)S.byId[it.id]=it;
+  S.byId={};for(const it of (S.all||S.items))S.byId[it.id]=it;  // every item, hidden ones too (the Hidden list needs them)
   const vids=S.items.filter(i=>i.kind==='video');
   // concert videos sort by their DJ, then the set
   S.movies=vids.filter(v=>!v.show).sort((a,b)=>((a.artist?a.artist+' ':'')+a.title).localeCompare((b.artist?b.artist+' ':'')+b.title));
@@ -3524,16 +3615,17 @@ function group(){
 async function loadLibrary(){
   const d=await api('/api/library');S.scanning=d.scanning;S.transcode=d.transcode;S.roots=d.roots;
   $('#scan').classList.toggle('hidden',!d.scanning);
-  if(d.version!==S.version){S.version=d.version;S.items=d.items;group();render()}
+  if(d.version!==S.version){S.version=d.version;S.all=d.items;S.items=d.items.filter(i=>!isHidden(i));group();render()}
   if(d.scanning)setTimeout(loadLibrary,3000);
 }
-async function loadState(){const d=await api('/api/state?profile='+encodeURIComponent(S.profile.id));S.progress=d.progress||{};S.mylist=d.mylist||[];S.music=d.music||null}
+async function loadState(){const d=await api('/api/state?profile='+encodeURIComponent(S.profile.id));S.progress=d.progress||{};S.mylist=d.mylist||[];S.music=d.music||null;
+  S.hidden={everyone:new Set(d.hidden?.everyone||[]),me:new Set(d.hidden?.me||[])}}
 const prog=id=>S.progress[id];
 function pct(id){const p=prog(id);if(!p||!p.dur||p.done)return 0;return Math.min(100,p.pos/p.dur*100)}
 
 function continueList(){
   const out=[];const seen=new Set();
-  const ents=Object.entries(S.progress).filter(([id])=>S.byId[id]&&S.byId[id].kind==='video').sort((a,b)=>b[1].updated-a[1].updated);
+  const ents=Object.entries(S.progress).filter(([id])=>S.byId[id]&&S.byId[id].kind==='video'&&!isHidden(S.byId[id])).sort((a,b)=>b[1].updated-a[1].updated);
   for(const[id,p]of ents){const it=S.byId[id];
     if(it.show){if(seen.has(it.show))continue;seen.add(it.show);
       if(p.done){const s=S.showByKey['show:'+it.show];const i=s.eps.indexOf(it);const nx=s.eps[i+1];if(nx&&!(prog(nx.id)?.done))out.push(nx)}
@@ -3547,7 +3639,7 @@ function itemCard(it){const sub=it.show?`${it.show} · S${it.season}:E${it.episo
   return h('div',{class:'card',onclick:()=>it.show?openShow(S.showByKey['show:'+it.show],it):openMovie(it)},a,h('div',{class:'lbl'},it.show?(it.epTitle||it.title):it.title),h('div',{class:'sub'},sub))}
 function showCard(s){return h('div',{class:'card',onclick:()=>openShow(s)},art(s.eps[0].id,s.name,false,isNew(s)?'NEW EPISODES':null),h('div',{class:'lbl'},s.name),h('div',{class:'sub'},`${s.seasons.length} Season${s.seasons.length>1?'s':''} · ${s.eps.length} ep`))}
 function albumCard(a){return h('div',{class:'card sq',onclick:()=>openAlbum(a)},art(a.cover,a.title,true),h('div',{class:'lbl'},a.title),h('div',{class:'sub'},[a.artist,a.year].filter(Boolean).join(' · ')))}
-function keyCard(k){if(k.startsWith('show:'))return S.showByKey[k]&&showCard(S.showByKey[k]);if(k.startsWith('album:'))return S.albumByKey[k]&&albumCard(S.albumByKey[k]);return S.byId[k]&&itemCard(S.byId[k])}
+function keyCard(k){if(k.startsWith('show:'))return S.showByKey[k]&&showCard(S.showByKey[k]);if(k.startsWith('album:'))return S.albumByKey[k]&&albumCard(S.albumByKey[k]);return S.byId[k]&&!isHidden(S.byId[k])&&itemCard(S.byId[k])}
 function row(title,cards){cards=cards.filter(Boolean);if(!cards.length)return null;const tr=h('div',{class:'track'},cards);
   const sc=d=>tr.scrollBy({left:d*tr.clientWidth*.85});
   return h('section',{class:'row'},h('h2',{},title),h('div',{class:'rowwrap'},h('button',{class:'arr l',onclick:()=>sc(-1),'aria-label':'Scroll left'},'‹'),tr,h('button',{class:'arr r',onclick:()=>sc(1),'aria-label':'Scroll right'},'›')))}
@@ -3560,7 +3652,7 @@ function render(){
   const m=$('#main');m.replaceChildren();
   if(!S.items.length){m.append(h('div',{class:'empty'},h('h2',{},S.scanning?'Scanning your library…':'Nothing here yet'),
      h('p',{},'Homeflix looks in: ',(S.roots||[]).map((r,i)=>[i?', ':'',h('code',{},r)])),h('p',{},'Add videos or music there, then press ⟳ to rescan.')));return}
-  const V={home:viewHome,movies:viewMovies,shows:viewShows,music:viewMusic,mylist:viewMyList,recent:viewRecent,search:viewSearch}[S.view]||viewHome;V(m)}
+  const V={home:viewHome,movies:viewMovies,shows:viewShows,music:viewMusic,mylist:viewMyList,recent:viewRecent,search:viewSearch,hidden:viewHidden}[S.view]||viewHome;V(m)}
 function hero(m){const pool=[...S.movies,...S.shows.map(s=>s.eps[0])];if(!pool.length)return false;
   const pick=pool[hash(new Date().toDateString()+S.profile.id)%pool.length];const isShow=!!pick.show;const title=isShow?pick.show:pick.title;
   const bg=h('div',{class:'bg'});const img=new Image();bg.style.backgroundImage=grad(title);img.onload=()=>bg.style.backgroundImage=`url(/thumb/${pick.id})`;img.src='/thumb/'+pick.id;
@@ -3577,15 +3669,15 @@ function viewHome(m){const hasHero=hero(m);const w=h('div',{class:hasHero?'rows'
     S.albums.length>30?row('All Albums',S.albums.map(albumCard)):null].filter(Boolean));m.append(w)}
 function sortSel(cur,opts,cb){const s=h('select',{class:'sel'},opts.map(([v,l])=>h('option',{value:v,selected:v===cur},l)));s.onchange=()=>cb(s.value);return s}
 function viewMovies(m){S.msort??='az';const list=[...S.movies];if(S.msort==='new')list.sort((a,b)=>b.added-a.added);if(S.msort==='year')list.sort((a,b)=>(b.year||0)-(a.year||0));
-  m.append(h('div',{class:'page'},h('div',{class:'ptitle'},h('h1',{},'Movies'),sortSel(S.msort,[['az','A–Z'],['new','Recently Added'],['year','Release Year']],v=>{S.msort=v;render()}),h('span',{class:'small'},`${list.length} titles`)),
+  m.append(h('div',{class:'page'},h('div',{class:'ptitle'},h('h1',{},'Movies'),sortSel(S.msort,[['az','A–Z'],['new','Recently Added'],['year','Release Year']],v=>{S.msort=v;render()}),h('span',{class:'small'},`${list.length} titles`),hiddenLink()),
    list.length?h('div',{class:'grid'},list.map(itemCard)):h('div',{class:'empty'},'No movies found.')))}
-function viewShows(m){m.append(h('div',{class:'page'},h('div',{class:'ptitle'},h('h1',{},'Shows')),S.shows.length?h('div',{class:'grid'},S.shows.map(showCard)):h('div',{class:'empty'},'No TV shows found. Name episodes like ',h('code',{},'Show Name S01E02.mkv'),'.')))}
+function viewShows(m){m.append(h('div',{class:'page'},h('div',{class:'ptitle'},h('h1',{},'Shows'),hiddenLink()),S.shows.length?h('div',{class:'grid'},S.shows.map(showCard)):h('div',{class:'empty'},'No TV shows found. Name episodes like ',h('code',{},'Show Name S01E02.mkv'),'.')))}
 function viewRecent(m){m.append(h('div',{class:'page'},h('div',{class:'ptitle'},h('h1',{},'New & Popular')),row('Recently Added Videos',recentVideos()),row('Recently Added Music',[...S.albums].sort((a,b)=>b.added-a.added).slice(0,40).map(albumCard))))}
 function viewMyList(m){const c=S.mylist.map(keyCard).filter(Boolean);m.append(h('div',{class:'page'},h('div',{class:'ptitle'},h('h1',{},'My List')),c.length?h('div',{class:'grid'},c):h('div',{class:'empty'},'Add titles with the + button.')))}
 function viewMusic(m){S.asort??='artist';const list=[...S.albums];if(S.asort==='new')list.sort((a,b)=>b.added-a.added);if(S.asort==='title')list.sort((a,b)=>a.title.localeCompare(b.title));
   const all=S.items.filter(i=>i.kind==='audio');
   m.append(h('div',{class:'page'},h('div',{class:'ptitle'},h('h1',{},'Music'),sortSel(S.asort,[['artist','Artist'],['title','Album'],['new','Recently Added']],v=>{S.asort=v;render()}),
-     h('button',{class:'btn play',onclick:()=>playQueue(all,0,true)},'⇄  Shuffle All'),h('span',{class:'small'},`${S.albums.length} albums · ${all.length} songs`)),
+     h('button',{class:'btn play',onclick:()=>playQueue(all,0,true)},'⇄  Shuffle All'),h('span',{class:'small'},`${S.albums.length} albums · ${all.length} songs`),hiddenLink()),
    list.length?h('div',{class:'grid sq'},list.map(albumCard)):h('div',{class:'empty'},'No music found.')))}
 function viewSearch(m){const q=S.q.toLowerCase().trim();const has=(...f)=>f.some(x=>x&&String(x).toLowerCase().includes(q));
   const mv=S.movies.filter(v=>has(v.title,v.year,v.file,v.artist)),sh=S.shows.filter(s=>has(s.name)),eps=S.items.filter(v=>v.show&&has(v.epTitle)&&!has(v.show)),
@@ -3599,13 +3691,41 @@ function viewSearch(m){const q=S.q.toLowerCase().trim();const has=(...f)=>f.some
 function modal(content){const md=$('#modal');md.replaceChildren(h('div',{class:'mbox'},h('button',{class:'close',onclick:closeModal,'aria-label':'Close'},'✕'),content));md.classList.remove('hidden');document.body.classList.add('noscroll');md.scrollTop=0}
 function closeModal(){$('#modal').classList.add('hidden');document.body.classList.remove('noscroll')}
 $('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal()});
+/* ---------- hiding things from the app ---------- */
+const EYE_OFF='<svg viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5c0 .65-.13 1.26-.36 1.83l2.92 2.92A11.8 11.8 0 0 0 23 12c-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46A11.8 11.8 0 0 0 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55A2.8 2.8 0 0 0 9 12a3 3 0 0 0 3 3c.22 0 .44-.03.65-.08l1.55 1.55A5 5 0 0 1 7 12c0-.79.2-1.53.53-2.2zm4.31-.78 3.15 3.15.02-.16a3 3 0 0 0-3-3l-.17.01z"/></svg>';
+async function setHidden(key,scope,on){await post('/api/hidden',{profile:S.profile.id,key,scope,on});const set=scope==='everyone'?S.hidden.everyone:S.hidden.me;on?set.add(key):set.delete(key)}
+function toast(text,undo){document.querySelectorAll('.toast').forEach(t=>t.remove());const t=h('div',{class:'toast',role:'status'},h('span',{},text));
+  if(undo)t.append(h('button',{onclick:async()=>{t.remove();await undo()}},'Undo'));document.body.append(t);setTimeout(()=>t.remove(),7000)}
+// the Hide menu: hide for everyone, or just for this profile. after() runs once it's hidden (close the details, redraw)
+function hideMenu(anchor,key,label,after){document.querySelectorAll('.hidemenu').forEach(m=>m.remove());document.querySelectorAll('.hidebtn.open,.hx.open').forEach(b=>b.classList.remove('open'));
+  const pick=scope=>async e=>{e.stopPropagation();menu.remove();anchor.classList.remove('open');await setHidden(key,scope,true);after&&after();regroup();
+    toast(`“${label}” is hidden${scope==='everyone'?'':' for '+S.profile.name}.`,async()=>{await setHidden(key,scope,false);regroup()})};
+  const menu=h('div',{class:'hidemenu',role:'menu',onclick:e=>e.stopPropagation()},
+    h('button',{role:'menuitem',onclick:pick('everyone')},h('b',{},'Hide for everyone'),h('span',{},'Nobody using this Homeflix will see it')),
+    h('button',{role:'menuitem',onclick:pick('me')},h('b',{},'Hide just for me'),h('span',{},`Only hidden for ${S.profile.name}. Other profiles still see it`)));
+  anchor.classList.add('open');anchor.parentNode.append(menu);menu.querySelector('button').focus();
+  setTimeout(()=>document.addEventListener('click',function off(){menu.remove();anchor.classList.remove('open');document.removeEventListener('click',off)}),0)}
+function hideBtn(key,label,text,after){const w=h('span',{class:'hidewrap'}),b=h('button',{class:'hidebtn',title:'Hide from Homeflix','aria-haspopup':'menu'});
+  b.innerHTML=EYE_OFF+'<span></span>';b.lastChild.textContent=text||'Hide';b.onclick=e=>{e.stopPropagation();hideMenu(b,key,label,after)};w.append(b);return w}
+function hiddenLink(){const n=S.hidden?S.hidden.everyone.size+S.hidden.me.size:0;return n?h('button',{class:'hidlink',onclick:()=>go('hidden')},`Hidden (${n})`):null}
+function viewHidden(m){const rows=[];const seen=new Set();
+  for(const[scope,set]of[['everyone',S.hidden.everyone],['me',S.hidden.me]])for(const key of set){if(seen.has(scope+key))continue;seen.add(scope+key);
+    let kind,name,sub;
+    if(key.startsWith('show:')){const eps=(S.all||[]).filter(i=>i.show===key.slice(5));if(!eps.length)continue;kind='SHOW';name=key.slice(5);sub=`${eps.length} episode${eps.length>1?'s':''}`}
+    else if(key.startsWith('album:')){const[ar,al]=key.slice(6).split('\u0001');const tr=(S.all||[]).filter(i=>i.kind==='audio'&&i.albumArtist===ar&&i.album===al);if(!tr.length)continue;kind='ALBUM';name=al;sub=`${ar} · ${tr.length} song${tr.length>1?'s':''}`}
+    else{const it=S.byId[key];if(!it)continue;if(it.kind==='audio'){kind='SONG';name=it.title;sub=`${it.artist} — ${it.album}`}else{kind=it.show?'EPISODE':'VIDEO';name=it.show?`${it.show} S${it.season}:E${it.episode}`:it.title;sub=[it.artist,it.year,fmtDur(it.duration)].filter(Boolean).join(' · ')}}
+    rows.push(h('div',{class:'hrow'},h('span',{class:'k'},kind),h('div',{class:'n'},h('b',{},name),h('span',{},sub)),h('span',{class:'scope'+(scope==='me'?' me':'')},scope==='me'?'Just me':'Everyone'),
+      h('button',{class:'ub',onclick:async()=>{await setHidden(key,scope,false);regroup();toast(`“${name}” is back.`)}},'Unhide')))}
+  m.append(h('div',{class:'page hidpage'},h('div',{class:'ptitle'},h('h1',{},'Hidden'),h('span',{class:'small'},`${rows.length} item${rows.length===1?'':'s'}`)),
+    h('div',{class:'hint'},`Things hidden for everyone, and things hidden just for you (${S.profile.name}). The files stay on your computer; Unhide brings them back.`),
+    rows.length?rows:h('div',{class:'empty'},'Nothing is hidden.')))}
 function listBtn(key){const on=S.mylist.includes(key);const b=h('button',{class:'btn round',title:on?'Remove from My List':'Add to My List'},on?'✓':'+');
   b.onclick=async()=>{const now=!S.mylist.includes(key);await post('/api/mylist',{profile:S.profile.id,key,on:now});if(now)S.mylist.unshift(key);else S.mylist=S.mylist.filter(k=>k!==key);b.textContent=now?'✓':'+';b.title=now?'Remove from My List':'Add to My List';if(S.view==='mylist'||S.view==='home')render()};return b}
 function resumeLabel(it){const p=prog(it.id);return p&&!p.done&&p.pos>20?`▶  Resume ${fmtT(p.pos)}`:'▶  Play'}
 function openMovie(it){const p=prog(it.id);const r=res(it);
   modal([h('div',{class:'mhead'},art(it.id,it.title),h('div',{class:'info'},it.artist?h('div',{class:'small',style:'color:#ccc;font-weight:700'},it.artist):null,h('h1',{},it.title),h('div',{class:'btns'},
       h('button',{class:'btn play',onclick:()=>{closeModal();playVideo(it)}},resumeLabel(it)),
-      p&&p.pos>20?h('button',{class:'btn gray',onclick:()=>{closeModal();playVideo(it,0)}},'↺  Start Over'):null,listBtn(it.id)))),
+      p&&p.pos>20?h('button',{class:'btn gray',onclick:()=>{closeModal();playVideo(it,0)}},'↺  Start Over'):null,listBtn(it.id),hideBtn(it.id,it.title,'Hide',closeModal)))),
    h('div',{class:'mbody'},meta(isNew(it)?h('span',{class:'new'},'New'):null,it.year,it.quality,fmtDur(it.duration),r?h('span',{class:'hd'},r):null,it.subs?.length?h('span',{class:'hd'},'CC'):null,
        !it.direct&&S.transcode&&(APPLE_HLS||!hevcPass(it))?h('span',{class:'hd',title:'Converted on the fly for your browser'},'TRANSCODE'):null),
      p&&!p.done&&p.dur?h('div',{style:'max-width:300px;margin-bottom:14px'},h('div',{class:'pbar',style:'position:static'},h('i',{style:`width:${pct(it.id)}%`})),h('div',{class:'small',style:'margin-top:6px'},`${fmtT(p.dur-p.pos)} remaining`)):null,
@@ -3618,16 +3738,18 @@ function openShow(s,focusEp){const nu=focusEp||nextUp(s);let season=nu.season;
   const sel=s.seasons.length>1?sortSel(String(season),s.seasons.map(n=>[String(n),'Season '+n]),v=>{season=+v;drawEps()}):h('span',{class:'small'},'Season '+season);
   drawEps();
   modal([h('div',{class:'mhead'},art(s.eps[0].id,s.name),h('div',{class:'info'},h('h1',{},s.name),h('div',{class:'btns'},
-     h('button',{class:'btn play',onclick:()=>{closeModal();playVideo(nu)}},prog(nu.id)&&!prog(nu.id).done?`▶  Resume S${nu.season}:E${nu.episode}`:`▶  Play S${nu.season}:E${nu.episode}`),listBtn(s.key)))),
+     h('button',{class:'btn play',onclick:()=>{closeModal();playVideo(nu)}},prog(nu.id)&&!prog(nu.id).done?`▶  Resume S${nu.season}:E${nu.episode}`:`▶  Play S${nu.season}:E${nu.episode}`),listBtn(s.key),hideBtn(s.key,s.name,'Hide show',closeModal)))),
    h('div',{class:'mbody'},meta(s.year,`${s.seasons.length} Season${s.seasons.length>1?'s':''}`,`${s.eps.length} Episodes`),
      h('div',{class:'eps'},h('h3',{},'Episodes',sel),eplist))])}
-function trackRow(t,n,onplay){const on=M.q[M.i]&&M.q[M.i].id===t.id&&!$('#mbar').classList.contains('hidden');
-  return h('div',{class:'trk'+(on?' on':''),onclick:onplay},h('div',{class:'n'},on?'♫':n),h('div',{},h('div',{},t.title),h('div',{class:'a'},t.artist)),h('div',{class:'a'},fmtT(t.duration)))}
+function trackRow(t,n,onplay,afterHide){const on=M.q[M.i]&&M.q[M.i].id===t.id&&!$('#mbar').classList.contains('hidden');
+  const x=h('button',{class:'hx',title:'Hide this song','aria-label':'Hide '+t.title,'aria-haspopup':'menu'});x.innerHTML=EYE_OFF;
+  x.onclick=e=>{e.stopPropagation();hideMenu(x,t.id,t.title,()=>setTimeout(()=>afterHide&&afterHide(),0))};
+  return h('div',{class:'trk'+(on?' on':''),onclick:onplay},h('div',{class:'n'},on?'♫':n),h('div',{},h('div',{},t.title),h('div',{class:'a'},t.artist)),h('div',{class:'a'},fmtT(t.duration)),x)}
 function openAlbum(a){const dur=a.tracks.reduce((s,t)=>s+(t.duration||0),0);
   modal([h('div',{class:'mhead album'},art(a.cover,a.title,true),h('div',{class:'info'},h('div',{class:'small',style:'color:#ccc'},'ALBUM'),h('h1',{},a.title),
       meta(h('b',{},a.artist),a.year,`${a.tracks.length} songs`,fmtDur(dur),a.genre),
-      h('div',{class:'btns'},h('button',{class:'btn play',onclick:()=>playQueue(a.tracks,0)},'▶  Play'),h('button',{class:'btn gray',onclick:()=>playQueue(a.tracks,0,true)},'⇄  Shuffle'),listBtn(a.key)))),
-   h('div',{class:'mbody'},a.tracks.map((t,i)=>trackRow(t,t.track||i+1,()=>{playQueue(a.tracks,i);openAlbum(a)})))])}
+      h('div',{class:'btns'},h('button',{class:'btn play',onclick:()=>playQueue(a.tracks,0)},'▶  Play'),h('button',{class:'btn gray',onclick:()=>playQueue(a.tracks,0,true)},'⇄  Shuffle'),listBtn(a.key),hideBtn(a.key,a.title,'Hide album',closeModal)))),
+   h('div',{class:'mbody'},a.tracks.map((t,i)=>trackRow(t,t.track||i+1,()=>{playQueue(a.tracks,i);openAlbum(a)},()=>{const b=S.albumByKey[a.key];b?openAlbum(b):closeModal()})))])}
 
 /* ---------- video player ---------- */
 const vid=$('#vid'),P={it:null,mode:'direct',off:0,dur:0,pending:0,sub:-1,lastSave:0,drag:false,idleT:0};
@@ -3813,7 +3935,7 @@ function mkeep(){const tr=M.q[M.i];if(!S.profile||!tr||!M.ready||mdur()<MLONG||$
 // press play (a jump asked for before that never finishes and playback hangs), so the song is loaded
 // when you press play, from that press
 function mrestore(){const m=S.music;if(!m||!$('#mbar').classList.contains('hidden'))return;
-  const q=m.q.map(id=>S.byId[id]).filter(Boolean);if(!q.length)return;const cur=S.byId[m.q[m.i]];
+  const q=m.q.map(id=>S.byId[id]).filter(it=>it&&!isHidden(it));if(!q.length)return;const cur=S.byId[m.q[m.i]];
   M.q=q;M.orig=(m.o||[]).map(id=>S.byId[id]).filter(Boolean);if(!M.orig.length)M.orig=[...q];
   M.i=Math.max(0,q.indexOf(cur));M.shuf=!!m.shuf;M.rep=!!m.rep;$('#mshuf').classList.toggle('on',M.shuf);$('#mrep').classList.toggle('on',M.rep);
   M.ready=false;M.off=0;M.pendingStart=M.seekTo=cur?m.pos||0:0;mShowTrack(M.q[M.i]);mPlayIcon();mfPlayIcon();aud.dispatchEvent(new Event('timeupdate'))}
@@ -3941,7 +4063,8 @@ async function showGate(manage){const d=await api('/api/profiles');S.profiles=d.
   const tiles=S.profiles.map(p=>h('div',{class:'prof',onclick:()=>!manage&&choose(p)},h('div',{class:'sq',style:'background:'+p.color},p.name[0].toUpperCase()),h('span',{},p.name),
      manage&&S.profiles.length>1?h('button',{class:'del',title:'Delete profile',onclick:async e=>{e.stopPropagation();if(confirm(`Delete profile "${p.name}" and its watch history?`)){await post('/api/profiles',{delete:p.id});if(S.profile&&S.profile.id===p.id){S.profile=null;localStorage.removeItem('hf_profile')}showGate(true)}}},'✕'):null));
   if(S.profiles.length<8)tiles.push(h('div',{class:'prof',onclick:async()=>{const n=prompt('Profile name');if(n&&n.trim()){await post('/api/profiles',{name:n.trim()});showGate(manage)}}},h('div',{class:'sq add'},'+'),h('span',{},'Add Profile')));
-  g.replaceChildren(h('div',{class:'logo',style:'position:absolute;top:20px;left:4%'},'HOMEFLIX'),h('h1',{},manage?'Manage Profiles:':'Who’s watching?'),h('div',{class:'profs'},tiles),
+  const lg=h('div',{class:'logo',style:'position:absolute;top:20px;left:4%'});lg.innerHTML=$('#nav .logo .mark').outerHTML;
+  g.replaceChildren(lg,h('h1',{},manage?'Manage Profiles:':'Who’s watching?'),h('div',{class:'profs'},tiles),
     h('button',{class:'gbtn',onclick:()=>showGate(!manage)},manage?'DONE':'MANAGE PROFILES'));g.classList.remove('hidden')}
 async function choose(p){S.profile=p;localStorage.hf_profile=p.id;$('#gate').classList.add('hidden');const av=$('#avatar');av.textContent=p.name[0].toUpperCase();av.style.background=p.color;av.title=p.name+' — switch profile';
   await loadState();S.version=-1;S.view='home';await loadLibrary();mrestore()}
@@ -3964,8 +4087,8 @@ addEventListener('beforeunload',()=>{if(P.it)navigator.sendBeacon&&navigator.sen
 # ----------------------------------------------------------------------------
 def fill_version():
     global APP_HTML, LOGIN_HTML
-    APP_HTML = APP_HTML.replace("__VERSION__", VERSION)
-    LOGIN_HTML = LOGIN_HTML.replace("__VERSION__", VERSION)
+    APP_HTML = APP_HTML.replace("__VERSION__", VERSION).replace("__LOGO__", logo_mark()).replace("__LOGO_CSS__", LOGO_CSS)
+    LOGIN_HTML = LOGIN_HTML.replace("__VERSION__", VERSION).replace("__LOGO__", logo_mark()).replace("__LOGO_CSS__", LOGO_CSS)
 
 
 def setup_output():
@@ -4008,6 +4131,9 @@ def main():
                     help="commercial skipping: off (default), auto (find ad breaks in TV recordings: "
                          ".ts, .m2ts, .mpg) or all (every video) (or set HOMEFLIX_ADS)")
     ap.add_argument("--quiet", action="store_true", help="don't log every HTTP request")
+    ap.add_argument("--exclude", action="append", metavar="PATH",
+                    help="a folder, file or pattern (like *sample*) to leave out (repeatable; or set HOMEFLIX_EXCLUDE). "
+                         "An empty .homeflixignore file in a folder also leaves it out")
     ap.add_argument("--home", metavar="DIR",
                     help="keep settings, data and cache together in this folder (or set HOMEFLIX_HOME)")
     ap.add_argument("--where", action="store_true", help="show where Homeflix keeps its files, then exit")
@@ -4035,6 +4161,11 @@ def main():
 
     VENC = pick_encoder()
     lib = Library(roots, make_thumbs=not a.no_thumbs)
+    excl = (a.exclude or []) + [os.environ.get("HOMEFLIX_EXCLUDE", "")]
+    lib.excludes = [e if any(c in e for c in "*?[") else str(Path(e).expanduser().resolve())
+                    for x in excl for e in str(x).split(os.pathsep) if e.strip()]
+    if lib.excludes:
+        log(f"  Not showing: {', '.join(lib.excludes)}")
     lib.music_roots = {str(Path(p).expanduser().resolve()) for r in music for p in str(r).split(os.pathsep) if p}
     Handler.lib = lib
     Handler.state = State(XDG_DATA / "state.json")
