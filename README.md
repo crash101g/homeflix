@@ -100,7 +100,7 @@ Homeflix speaks the **Subsonic** language that many music apps use, so your musi
 - **Favourites** (stars) and **recently played** albums are remembered; Amperfy shows them on CarPlay.
 - Playlists and podcasts aren't supported.
 
-**Away from home:** Homeflix only works on your home network, so download music before you leave, or use a private connection back home such as a VPN.
+**Away from home:** Homeflix only works on your home network, so download music before you leave, or reach Homeflix from anywhere with [Tailscale](#https-and-using-homeflix-away-from-home).
 
 ### Skips the commercials in TV recordings (optional)
 - **Off until you turn it on**, so a library of movies never sees an ad button. Turn it on by adding this line to your settings file (see [Where things live](#-where-things-live)) and restarting Homeflix:
@@ -229,6 +229,25 @@ A tool that serves files from your disk should be paranoid, so Homeflix is:
 - **LAN-first.** The installer only opens the firewall to your local subnet.
 
 > ⚠️ Homeflix speaks plain HTTP and is meant for a trusted home network. **Don't port-forward it to the internet.** For access away from home, use Tailscale/WireGuard or put it behind a TLS reverse proxy.
+
+### HTTPS and using Homeflix away from home
+
+**Do I need HTTPS?** At home, usually not. Homeflix uses plain `http://` on your own network. HTTPS would hide your traffic from other devices on the same Wi-Fi (worth it if guests or untrusted gadgets share it), and iPhones allow one more feature over HTTPS: the **Big player keeping the screen on** while it's open. Over plain HTTP the screen may still dim and lock; the music keeps playing.
+
+**Why Homeflix doesn't just switch on HTTPS itself:** a home server can't get a normal trusted certificate for an address like `192.168.1.27`. With a self-made certificate, every browser shows a "not private" warning, and iPhone apps such as Amperfy refuse to connect until you install that certificate on each device.
+
+**The easy way to get both HTTPS and access from anywhere: [Tailscale](https://tailscale.com)** (free for personal use). It's a private network between your own devices. Your phone can then reach Homeflix from anywhere (in the car on cellular, at work, travelling) through a real HTTPS address with a trusted certificate, so there are no warnings. Nothing is opened to the internet.
+
+1. Create a Tailscale account, then install Tailscale on the computer that runs Homeflix and on your phone, and sign in to the same account on both.
+2. In the Tailscale admin console, under **DNS**, turn on **MagicDNS** and **HTTPS Certificates**.
+3. On the Homeflix computer, run:
+   ```bash
+   tailscale serve --bg 8484
+   ```
+   Use your port if you changed it. On Linux you may need `sudo`. `--bg` keeps it running after restarts. To check it, run `tailscale serve status`; to stop it, run `tailscale serve --https=443 off`.
+4. It prints an address like `https://my-pc.your-tailnet.ts.net`. Open that on your phone, in the browser, or as the server URL in [Amperfy](#music-apps-and-apple-carplay). Your usual `http://192.168.1.x:8484` address keeps working at home too.
+
+> Tailscale's `serve` shares Homeflix only with devices signed in to *your* Tailscale account. Don't use `tailscale funnel`, which would put it on the public internet. If more than you use the account, set a Homeflix password (`--password`). See Tailscale's [serve documentation](https://tailscale.com/kb/1242/tailscale-serve) for more options.
 
 ## 📁 Where things live
 
