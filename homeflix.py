@@ -54,7 +54,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.9.0"
+VERSION = "1.10.0"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -679,7 +679,7 @@ class Library:
         if not ids:
             return
         removed = 0
-        for folder in (self.thumb_dir, self.sub_dir, XDG_CACHE / "ads"):
+        for folder in (self.thumb_dir, self.sub_dir, XDG_CACHE / "ads", XDG_CACHE / "audio"):
             try:
                 files = list(folder.iterdir())
             except OSError:
@@ -1829,6 +1829,443 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     request_queue_size = 64
 
 
+# ----------------------------------------------------------------------------
+# Subsonic API: lets music apps (Amperfy, with CarPlay and offline downloads) use the music library
+# ----------------------------------------------------------------------------
+SUBSONIC_VERSION = "1.16.1"
+SUBSONIC_IOS_AUDIO = {".mp3", ".m4a", ".aac", ".flac", ".wav"}  # what iPhone apps play as they are
+
+
+class Subsonic:
+    """The parts of the Subsonic API (https://www.subsonic.org/pages/api.jsp) that music apps use to
+    browse, play, download and favourite music. Songs are the music folders' audio files, plus their
+    videos (DJ sets, concerts) as audio-only songs in an album called "Music Videos"."""
+    VIDEO_ALBUM = "Music Videos"
+
+    def __init__(self, lib, music_roots, data_dir: Path, cache_dir: Path):
+        self.lib = lib
+        self.music_roots = {str(r) for r in music_roots}
+        self.path = data_dir / "subsonic.json"
+        self.data = load_json(self.path, {})
+        self.data.setdefault("starred", {})   # id -> time starred
+        self.data.setdefault("played", {})    # album id -> [last played, play count]
+        self.lock = threading.Lock()
+        self.audio_dir = cache_dir / "audio"  # sound taken out of videos (and formats iPhones can't play)
+        self.audio_locks = {}
+        self._cache = (None, None)
+        threading.Thread(target=self._prepare_loop, daemon=True).start()
+
+    # -- the music library, as songs / albums / artists ---------------------------------------
+    @staticmethod
+    def _id(prefix, text):
+        return prefix + hashlib.sha1(text.encode("utf-8", "surrogateescape")).hexdigest()[:12]
+
+    def library(self):
+        """(songs, albums, artists) dicts keyed by id; rebuilt when the library changes."""
+        ver = self.lib.version
+        if self._cache[0] == ver:
+            return self._cache[1]
+        with self.lib.lock:
+            items = list(self.lib.items.values())
+        songs, albums, artists = {}, {}, {}
+        for it in items:
+            if it["kind"] == "audio":
+                title, artist, aartist, album = it.get("title"), it.get("artist"), it.get("albumArtist"), it.get("album")
+            elif it["kind"] == "video" and it["_root"] in self.music_roots and (it.get("_a") or {}).get("codec"):
+                title, artist, aartist, album = it.get("title") or Path(it["file"]).stem, "Music Videos", "Music Videos", self.VIDEO_ALBUM
+            else:
+                continue
+            arid = self._id("ar-", aartist or "Unknown Artist")
+            alid = self._id("al-", f"{aartist}\u0001{album}")
+            ar = artists.setdefault(arid, {"id": arid, "name": aartist or "Unknown Artist", "albums": []})
+            al = albums.get(alid)
+            if not al:
+                al = albums[alid] = {"id": alid, "name": album or "Singles", "artist": ar["name"], "artistId": arid,
+                                     "songs": [], "created": 0, "year": None, "genre": None}
+                ar["albums"].append(al)
+            songs[it["id"]] = {"it": it, "title": title, "artist": artist or ar["name"], "album": al}
+            al["songs"].append(songs[it["id"]])
+        for al in albums.values():
+            al["songs"].sort(key=lambda s: (s["it"].get("disc") or 1, s["it"].get("track") or 0, s["title"].lower()))
+            al["created"] = max(s["it"]["added"] for s in al["songs"])
+            al["year"] = next((self._year(s["it"]) for s in al["songs"] if self._year(s["it"])), None)
+            al["genre"] = next((s["it"].get("genre") for s in al["songs"] if s["it"].get("genre")), None)
+            al["cover"] = al["songs"][0]["it"]["id"]
+        for ar in artists.values():
+            ar["albums"].sort(key=lambda a: ((a["year"] or 0), a["name"].lower()))
+        self._cache = (ver, (songs, albums, artists))
+        return self._cache[1]
+
+    @staticmethod
+    def _year(it):
+        m = re.match(r"\d{4}", str(it.get("year") or ""))
+        return int(m.group(0)) if m else None
+
+    @staticmethod
+    def _iso(t):
+        return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(t or 0))
+
+    def _starred(self, i):
+        t = self.data["starred"].get(i)
+        return {"starred": self._iso(t)} if t else {}
+
+    def song_attrs(self, s):
+        it, al = s["it"], s["album"]
+        audio = self.audio_kind(it)
+        dur = int(it.get("duration") or 0)
+        a = {"id": it["id"], "parent": al["id"], "isDir": "false", "title": s["title"], "album": al["name"],
+             "artist": s["artist"], "albumId": al["id"], "artistId": al["artistId"], "coverArt": al["cover"],
+             "duration": dur, "created": self._iso(it["added"]), "type": "music", "isVideo": "false",
+             "path": f"{al['artist']}/{al['name']}/{it['file']}"}
+        if audio == "file":
+            a.update(size=it.get("size", 0), suffix=it["_ext"].lstrip("."), contentType=guess_type(it),
+                     bitRate=int(it.get("size", 0) * 8 / 1000 / dur) if dur else 0)
+        else:  # its sound as .m4a (see audio_file); the size is a guess until it's made
+            ready = self._ready_audio(it)
+            a.update(size=ready.stat().st_size if ready else dur * 20000, suffix="m4a", contentType="audio/mp4", bitRate=160)
+        if it.get("track"):
+            a["track"] = it["track"]
+        if it.get("disc"):
+            a["discNumber"] = it["disc"]
+        if self._year(it):
+            a["year"] = self._year(it)
+        if it.get("genre"):
+            a["genre"] = it["genre"]
+        a.update(self._starred(it["id"]))
+        return a
+
+    def album_attrs(self, al):
+        a = {"id": al["id"], "name": al["name"], "title": al["name"], "album": al["name"], "artist": al["artist"],
+             "artistId": al["artistId"], "parent": al["artistId"], "isDir": "true", "coverArt": al["cover"],
+             "songCount": len(al["songs"]), "duration": int(sum(s["it"].get("duration") or 0 for s in al["songs"])),
+             "created": self._iso(al["created"])}
+        if al["year"]:
+            a["year"] = al["year"]
+        if al["genre"]:
+            a["genre"] = al["genre"]
+        played = self.data["played"].get(al["id"])
+        if played:
+            a.update(played=self._iso(played[0]), playCount=played[1])
+        a.update(self._starred(al["id"]))
+        return a
+
+    def artist_attrs(self, ar):
+        a = {"id": ar["id"], "name": ar["name"], "albumCount": len(ar["albums"])}
+        if ar["albums"]:
+            a["coverArt"] = ar["albums"][0]["cover"]
+        a.update(self._starred(ar["id"]))
+        return a
+
+    def _indexed(self, artists):
+        groups = {}
+        for ar in sorted(artists, key=lambda a: a["name"].lower()):
+            first = ar["name"][:1].upper()
+            groups.setdefault(first if first.isalpha() else "#", []).append(ar)
+        return [("index", {"name": k}, [("artist", self.artist_attrs(a), []) for a in v]) for k, v in sorted(groups.items())]
+
+    # -- sound for apps ---------------------------------------------------------------------
+    def audio_kind(self, it):
+        """"file": sent as it is; "m4a": its sound is taken out (videos) or converted (formats iPhones can't play)."""
+        return "file" if it["kind"] == "audio" and it["_ext"] in SUBSONIC_IOS_AUDIO else "m4a"
+
+    def _ready_audio(self, it):
+        out = self.audio_dir / f"{it['id']}.m4a"
+        return out if out.exists() and out.stat().st_mtime >= it["added"] else None
+
+    @staticmethod
+    def _needs_encoding(it):
+        return (it.get("_a") or {}).get("codec") != "aac"
+
+    def audio_file(self, it, background=False):
+        """A cached .m4a of the item's sound. AAC sound is copied (seconds); other sound is converted
+        (about 2 minutes per hour of music), so those are prepared in the background ahead of time."""
+        out = self.audio_dir / f"{it['id']}.m4a"
+        lk = self.audio_locks.setdefault(it["id"], threading.Lock())
+        if not lk.acquire(blocking=not background):
+            return None  # being made already
+        try:
+            if self._ready_audio(it):
+                return out
+            if not FFMPEG:
+                return None
+            self.audio_dir.mkdir(parents=True, exist_ok=True)
+            tmp = out.with_suffix(".part.m4a")
+            pre = [NICE, "-n", "15"] if background and NICE else []
+            cmd = pre + [FFMPEG, "-nostdin", "-v", "error", "-y", "-i", it["_path"], "-map", "0:a:0", "-vn", "-sn", "-dn"]
+            cmd += ["-c:a", "aac", "-b:a", "160k", "-ac", "2"] if self._needs_encoding(it) else ["-c:a", "copy"]
+            cmd += ["-movflags", "+faststart", str(tmp)]
+            r = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               **(LOW_PRIO if background else SUBPROC))
+            if r.returncode != 0 or not tmp.exists():
+                tmp.unlink(missing_ok=True)
+                return None
+            os.replace(tmp, out)
+            return out
+        finally:
+            lk.release()
+
+    def audio_now(self, it, wait=45):
+        """The item's .m4a for an app that's asking for it: made now if need be (in a thread, so a
+        long conversion carries on if the app gives up), waiting at most `wait` seconds."""
+        done = self._ready_audio(it)
+        if done:
+            return done
+        t = threading.Thread(target=self.audio_file, args=(it,), daemon=True)
+        t.start()
+        t.join(wait)
+        return self._ready_audio(it)
+
+    def _prepare_loop(self):
+        """Prepare, ahead of time, the sound that takes long to convert (not AAC), so it's ready when
+        an app asks: one file at a time, at low priority, pausing while a video is being converted."""
+        seen = None
+        while True:
+            time.sleep(30)
+            if not FFMPEG or self.lib.scanning or self.lib.version == seen:
+                continue
+            seen = self.lib.version
+            songs, _, _ = self.library()
+            todo = [s["it"] for s in songs.values()
+                    if self.audio_kind(s["it"]) == "m4a" and self._needs_encoding(s["it"]) and not self._ready_audio(s["it"])]
+            if todo:
+                log(f"Music apps: preparing the sound of {len(todo)} file(s) in the background")
+            for it in sorted(todo, key=lambda i: -i["added"]):  # newest first
+                while Handler.converting > 0:
+                    time.sleep(10)
+                if self.lib.version != seen and not self.lib.get(it["id"]):
+                    continue  # deleted meanwhile
+                self.audio_file(it, background=True)
+
+    # -- favourites and plays ------------------------------------------------------------------
+    def _save(self):
+        atomic_write(self.path, json.dumps(self.data, indent=1))
+
+    def star(self, ids, on):
+        with self.lock:
+            for i in ids:
+                if on:
+                    self.data["starred"][i] = int(time.time())
+                else:
+                    self.data["starred"].pop(i, None)
+            self._save()
+
+    def played(self, song_id):
+        songs, _, _ = self.library()
+        s = songs.get(song_id)
+        if not s:
+            return
+        with self.lock:
+            p = self.data["played"].setdefault(s["album"]["id"], [0, 0])
+            p[0], p[1] = int(time.time()), p[1] + 1
+            self._save()
+
+    # -- requests -------------------------------------------------------------------------------
+    def check_auth(self, q, password):
+        """Subsonic sign-in: u (any name), then p (plain or "enc:" hex) or t = md5(password + s)."""
+        if not password:
+            return True
+        p, t, salt = q.get("p", ""), q.get("t", ""), q.get("s", "")
+        if p.startswith("enc:"):
+            try:
+                p = bytes.fromhex(p[4:]).decode("utf-8")
+            except ValueError:
+                p = ""
+        if p:
+            return hmac.compare_digest(p, password)
+        if t and salt:
+            return hmac.compare_digest(t.lower(), hashlib.md5((password + salt).encode()).hexdigest())
+        return False
+
+    def handle(self, h, action, q, multi):
+        """Answer one request. Returns (element, attributes, children) for the response, a
+        ("file", path, type) to send, or raises SubsonicError."""
+        songs, albums, artists = self.library()
+        ok = (None, {}, [])
+        if action in ("ping", "startScan"):
+            if action == "startScan":
+                threading.Thread(target=self.lib.scan, daemon=True).start()
+            return ok
+        if action == "getLicense":
+            return ("license", {"valid": "true"}, [])
+        if action == "getOpenSubsonicExtensions":
+            return ("openSubsonicExtensions", {}, [])
+        if action == "getScanStatus":
+            return ("scanStatus", {"scanning": str(bool(self.lib.scanning)).lower(), "count": len(songs)}, [])
+        if action == "getUser":
+            roles = {k: "true" for k in ("streamRole", "downloadRole", "playlistRole", "coverArtRole", "scrobblingEnabled")}
+            return ("user", dict(username=q.get("u", "homeflix"), adminRole="false", settingsRole="false", **roles), [])
+        if action == "getMusicFolders":
+            return ("musicFolders", {}, [("musicFolder", {"id": 1, "name": "Music"}, [])])
+        if action in ("getArtists", "getIndexes"):
+            name = "artists" if action == "getArtists" else "indexes"
+            attrs = {"ignoredArticles": ""}
+            if action == "getIndexes":
+                attrs["lastModified"] = int(max([s["it"]["added"] for s in songs.values()] or [0]) * 1000)
+            return (name, attrs, self._indexed(artists.values()))
+        if action == "getArtist":
+            ar = artists.get(q.get("id", ""))
+            if not ar:
+                raise SubsonicError(70, "Artist not found")
+            return ("artist", self.artist_attrs(ar), [("album", self.album_attrs(a), []) for a in ar["albums"]])
+        if action == "getAlbum":
+            al = albums.get(q.get("id", ""))
+            if not al:
+                raise SubsonicError(70, "Album not found")
+            return ("album", self.album_attrs(al), [("song", self.song_attrs(s), []) for s in al["songs"]])
+        if action == "getSong":
+            s = songs.get(q.get("id", ""))
+            if not s:
+                raise SubsonicError(70, "Song not found")
+            return ("song", self.song_attrs(s), [])
+        if action == "getMusicDirectory":
+            i = q.get("id", "")
+            if i in artists:
+                ar = artists[i]
+                return ("directory", {"id": i, "name": ar["name"]}, [("child", self.album_attrs(a), []) for a in ar["albums"]])
+            if i in albums:
+                al = albums[i]
+                return ("directory", {"id": i, "name": al["name"], "parent": al["artistId"]},
+                        [("child", self.song_attrs(s), []) for s in al["songs"]])
+            raise SubsonicError(70, "Directory not found")
+        if action == "getGenres":
+            g = {}
+            for al in albums.values():
+                for s in al["songs"]:
+                    if s["it"].get("genre"):
+                        e = g.setdefault(s["it"]["genre"], [0, set()])
+                        e[0] += 1
+                        e[1].add(al["id"])
+            return ("genres", {}, [("genre", {"songCount": n, "albumCount": len(a)}, [], name) for name, (n, a) in sorted(g.items())])
+        if action in ("getAlbumList2", "getAlbumList"):
+            size, off = min(int(q.get("size") or 10), 500), int(q.get("offset") or 0)
+            typ = q.get("type", "alphabeticalByName")
+            lst = list(albums.values())
+            if typ == "newest":
+                lst.sort(key=lambda a: -a["created"])
+            elif typ in ("recent", "frequent"):
+                k = 0 if typ == "recent" else 1
+                lst = [a for a in lst if a["id"] in self.data["played"]]
+                lst.sort(key=lambda a: -self.data["played"][a["id"]][k])
+            elif typ == "random":
+                random.shuffle(lst)
+            elif typ == "starred":
+                lst = [a for a in lst if a["id"] in self.data["starred"]]
+            elif typ == "alphabeticalByArtist":
+                lst.sort(key=lambda a: (a["artist"].lower(), a["name"].lower()))
+            elif typ == "byYear":
+                lo, hi = int(q.get("fromYear") or 0), int(q.get("toYear") or 9999)
+                lst = [a for a in lst if a["year"] and min(lo, hi) <= a["year"] <= max(lo, hi)]
+                lst.sort(key=lambda a: a["year"], reverse=lo > hi)
+            elif typ == "byGenre":
+                lst = [a for a in lst if (a["genre"] or "").lower() == q.get("genre", "").lower()]
+            else:
+                lst.sort(key=lambda a: a["name"].lower())
+            name = "albumList2" if action == "getAlbumList2" else "albumList"
+            el = "album"
+            return (name, {}, [(el, self.album_attrs(a), []) for a in lst[off:off + size]])
+        if action == "getRandomSongs":
+            lst = list(songs.values())
+            random.shuffle(lst)
+            return ("randomSongs", {}, [("song", self.song_attrs(s), []) for s in lst[:min(int(q.get("size") or 10), 500)]])
+        if action == "getSongsByGenre":
+            g = q.get("genre", "").lower()
+            lst = [s for s in songs.values() if (s["it"].get("genre") or "").lower() == g]
+            off, n = int(q.get("offset") or 0), min(int(q.get("count") or 10), 500)
+            return ("songsByGenre", {}, [("song", self.song_attrs(s), []) for s in lst[off:off + n]])
+        if action in ("search3", "search2"):
+            words = [w for w in q.get("query", "").replace('"', "").lower().split() if w]
+            hit = lambda *t: all(any(w in (x or "").lower() for x in t) for w in words)
+            part = lambda key, dflt: (int(q.get(key + "Offset") or 0), min(int(q.get(key + "Count") or dflt), 1000))
+            ao, an = part("artist", 20)
+            bo, bn = part("album", 20)
+            so, sn = part("song", 20)
+            ars = sorted([a for a in artists.values() if hit(a["name"])], key=lambda a: a["name"].lower())
+            als = sorted([a for a in albums.values() if hit(a["name"], a["artist"])], key=lambda a: a["name"].lower())
+            sgs = sorted([s for s in songs.values() if hit(s["title"], s["artist"], s["album"]["name"])],
+                         key=lambda s: (s["album"]["name"].lower(), s["it"].get("track") or 0))
+            name = "searchResult3" if action == "search3" else "searchResult2"
+            return (name, {}, [("artist", self.artist_attrs(a), []) for a in ars[ao:ao + an]]
+                    + [("album", self.album_attrs(a), []) for a in als[bo:bo + bn]]
+                    + [("song", self.song_attrs(s), []) for s in sgs[so:so + sn]])
+        if action in ("getStarred2", "getStarred"):
+            st = self.data["starred"]
+            return ("starred2" if action == "getStarred2" else "starred", {},
+                    [("artist", self.artist_attrs(a), []) for a in artists.values() if a["id"] in st]
+                    + [("album", self.album_attrs(a), []) for a in albums.values() if a["id"] in st]
+                    + [("song", self.song_attrs(s), []) for s in songs.values() if s["it"]["id"] in st])
+        if action in ("star", "unstar"):
+            self.star([i for k in ("id", "albumId", "artistId") for i in multi.get(k, [])], action == "star")
+            return ok
+        if action == "scrobble":
+            if q.get("submission", "true") != "false":
+                for i in multi.get("id", []):
+                    self.played(i)
+            return ok
+        if action in ("setRating", "createBookmark", "deleteBookmark", "savePlayQueue"):
+            return ok
+        empty = {"getPlaylists": "playlists", "getPodcasts": "podcasts", "getNewestPodcasts": "newestPodcasts",
+                 "getInternetRadioStations": "internetRadioStations", "getBookmarks": "bookmarks",
+                 "getNowPlaying": "nowPlaying", "getSimilarSongs2": "similarSongs2", "getSimilarSongs": "similarSongs",
+                 "getTopSongs": "topSongs", "getArtistInfo2": "artistInfo2", "getArtistInfo": "artistInfo",
+                 "getAlbumInfo2": "albumInfo", "getAlbumInfo": "albumInfo", "getShares": "shares"}
+        if action in empty:
+            return (empty[action], {}, [])
+        if action in ("getPlaylist", "getPlayQueue"):
+            raise SubsonicError(70, "Not found")
+        if action in ("createPlaylist", "updatePlaylist", "deletePlaylist"):
+            raise SubsonicError(50, "Playlists aren't supported by Homeflix")
+        if action in ("stream", "download"):
+            s = songs.get(q.get("id", ""))
+            if not s:
+                raise SubsonicError(70, "Song not found")
+            it = s["it"]
+            if self.audio_kind(it) == "file":
+                return ("file", it["_path"], guess_type(it))
+            f = self.audio_now(it)
+            if not f:
+                raise SubsonicError(0, "Homeflix is still preparing the sound of this file. Try again in a few minutes.")
+            return ("file", str(f), "audio/mp4")
+        if action == "getCoverArt":
+            i = q.get("id", "")
+            if i in albums:
+                i = albums[i]["cover"]
+            elif i in artists and artists[i]["albums"]:
+                i = artists[i]["albums"][0]["cover"]
+            it = self.lib.get(i)
+            img = self.lib.thumb(it) if it else None
+            if not img:
+                raise SubsonicError(70, "Cover art not found")
+            return ("file", img, mimetypes.guess_type(img)[0] or "image/jpeg")
+        raise SubsonicError(0, f"{action} isn't supported by Homeflix")
+
+
+class SubsonicError(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code, self.message = code, message
+
+
+def subsonic_xml(name, attrs, children, text=None):
+    esc = lambda v: (str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;"))
+    a = "".join(f' {k}="{esc(v)}"' for k, v in attrs.items() if v is not None)
+    inner = esc(text) if text is not None else ""
+    inner += "".join(subsonic_xml(*c) for c in children)
+    return f"<{name}{a}>{inner}</{name}>" if inner else f"<{name}{a}/>"
+
+
+def subsonic_json(children):
+    """children ([(name, attrs, children[, text])]) as Subsonic JSON: repeated names become lists."""
+    out = {}
+    for c in children:
+        name, attrs, kids = c[0], c[1], c[2]
+        v = {k: (True if val == "true" else False if val == "false" else val) for k, val in attrs.items() if val is not None}
+        v.update(subsonic_json(kids))
+        if len(c) > 3 and c[3] is not None:
+            v["value"] = c[3]
+        out.setdefault(name, []).append(v)
+    return out
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = f"Homeflix/{VERSION}"
@@ -1839,6 +2276,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     quiet = False
     quality = "high"
     ads: "AdFinder" = None
+    sub: "Subsonic" = None
     hls: "HlsJobs" = None
     converting = 0  # videos being converted right now: ad finding waits for them
     conv_lock = threading.Lock()
@@ -1908,6 +2346,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path, qs = u.path, urllib.parse.parse_qs(u.query)
         if path == "/favicon.svg":
             return self.send_bytes(FAVICON.encode(), "image/svg+xml", extra={"Cache-Control": "max-age=86400"})
+        if path.startswith("/rest/"):  # music apps (Subsonic API): their own sign-in, see Subsonic
+            return self.subsonic(path, qs)
         if not self.authed():
             if path.startswith(("/api/", "/media/", "/transcode/", "/thumb/", "/subs/")):
                 return self.err(401, "login required")
@@ -1968,9 +2408,45 @@ class Handler(http.server.BaseHTTPRequestHandler):
             t = float((qs.get("t") or ["0"])[0] or 0)
             return self.transcode(it, max(0.0, t), (qs.get("hevc") or [""])[0])
 
+    def subsonic(self, path, multi):
+        action = path[len("/rest/"):].strip("/")
+        action = action[:-5] if action.endswith(".view") else action
+        q = {k: v[-1] for k, v in multi.items()}
+        env = {"status": "ok", "version": SUBSONIC_VERSION, "type": "homeflix", "serverVersion": VERSION, "openSubsonic": "true"}
+        try:
+            if not self.sub.check_auth(q, self.password):
+                raise SubsonicError(40, "Wrong username or password")
+            r = self.sub.handle(self, action, q, multi)
+            if r[0] == "file":
+                return self.send_file(r[1], r[2], cache="max-age=86400" if action == "getCoverArt" else "no-cache")
+            name, attrs, kids = r
+        except SubsonicError as e:
+            env["status"] = "failed"
+            name, attrs, kids = "error", {"code": e.code, "message": e.message}, []
+        except (ValueError, KeyError) as e:
+            env["status"] = "failed"
+            name, attrs, kids = "error", {"code": 10, "message": f"Bad request: {e}"}, []
+        if q.get("f") == "json":
+            body = dict(env)
+            if name:
+                obj = {k: (True if v == "true" else False if v == "false" else v) for k, v in attrs.items()}
+                obj.update(subsonic_json(kids))
+                body[name] = obj
+            return self.send_bytes(json.dumps({"subsonic-response": body}, separators=(",", ":")).encode(),
+                                   "application/json", extra={"Cache-Control": "no-store"})
+        xml = '<?xml version="1.0" encoding="UTF-8"?>' + subsonic_xml(
+            "subsonic-response", {"xmlns": "http://subsonic.org/restapi", **env}, [(name, attrs, kids)] if name else [])
+        return self.send_bytes(xml.encode(), "text/xml; charset=utf-8", extra={"Cache-Control": "no-store"})
+
     def route_post(self):
         u = urllib.parse.urlsplit(self.path)
         path = u.path
+        if path.startswith("/rest/"):  # Subsonic apps may send their parameters as a form
+            n = int(self.headers.get("Content-Length") or 0)
+            form = urllib.parse.parse_qs(self.rfile.read(min(n, 100_000)).decode(errors="replace"))
+            for k, v in urllib.parse.parse_qs(u.query).items():
+                form.setdefault(k, []).extend(v)
+            return self.subsonic(path, form)
         if path == "/login":
             n = int(self.headers.get("Content-Length") or 0)
             form = urllib.parse.parse_qs(self.rfile.read(min(n, 4096)).decode(errors="replace"))
@@ -3359,6 +3835,8 @@ def main():
     Handler.quality = a.quality
     Handler.ads = AdFinder(lib, a.ads)
     Handler.hls = HlsJobs(XDG_CACHE / "hls")
+    music_roots = [Path(p).expanduser().resolve() for r in music for p in str(r).split(os.pathsep) if p]
+    Handler.sub = Subsonic(lib, music_roots, XDG_DATA, XDG_CACHE)
     Handler.ads.busy = lambda: Handler.converting > 0
 
     log(f"Homeflix {VERSION} starting (Python {sys.version.split()[0]}, {sys.platform})")
