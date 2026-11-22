@@ -55,7 +55,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.12.0"
+VERSION = "1.13.0"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -315,6 +315,29 @@ def clean_title(stem: str):
     return (t or tidy(stem)), year
 
 
+_RELEASE_TAG_RE = re.compile(r"(?i)\b(?:\d{3,4}p|bluray|blu-ray|brrip|bdrip|web-?dl|webrip|hdtv|dvdrip|x26[45]|h\.?26[45]|hevc|xvid|remux|proper|repack)\b")
+
+
+def video_title(stem):
+    """(title, year) for a video named in words ("Above & Beyond： Live at The Hollywood Bowl (Full 2016
+    Concert) [abcdefghijk]", "vlc-record-2026-08-22-22h31m04s-JOHN SUMMIT @ ..."), as opposed to a
+    release-style name ("Movie.Name.2019.1080p.BluRay", see clean_title): nothing is cut off at the
+    year; download ids, recorder prefixes and quality leftovers are removed; a year at the end
+    ("Superman - 2025") becomes the year."""
+    s = re.sub(r"(?i)^vlc-record-\d{4}-\d\d-\d\d-\d\dh\d\dm\d\ds-", "", stem)
+    s = re.sub(r"(?i)\.(?:m4a|mp3|mp4|webm)-?$", "", s)
+    s = re.sub(r"\.f\d{2,4}$", "", s)  # yt-dlp format number
+    s = loose_title(s)
+    s = re.sub(r"\s*!{2,}", "", s)
+    s = re.sub(r"\(\s+", "(", re.sub(r"\s+\)", ")", s))
+    s = re.sub(r"(?i)\s*-\s*(?:\d{3,4}p|4k)$", "", s).strip(" -") or stem
+    m = re.search(r"(?:\s*-\s*|\s*\(\s*|-)((?:19|20)\d\d)\)?$", s)
+    if m and s[:m.start()].strip(" -"):
+        return s[:m.start()].strip(" -"), int(m.group(1))
+    years = re.findall(r"\b((?:19[5-9]|20[0-4])\d)\b", s)
+    return s, (int(years[-1]) if years else None)
+
+
 def parse_video_name(path: Path, root: Path):
     stem = path.stem
     info = {}
@@ -334,7 +357,10 @@ def parse_video_name(path: Path, root: Path):
         info.update(show=show or "Unknown Show", season=season, episode=ep,
                     epTitle=ep_title, title=ep_title or f"Episode {ep}", year=year)
         return info
-    title, year = clean_title(stem)
+    if " " in stem.strip() and len(_RELEASE_TAG_RE.findall(stem)) < 2:
+        title, year = video_title(stem)
+    else:
+        title, year = clean_title(stem)
     if path.parent != root:
         ptitle, pyear = clean_title(path.parent.name)
         if (pyear and not year) or len(title) <= 3 or title.lower() in ("movie", "film", "video"):
@@ -694,7 +720,7 @@ class Library:
         video of the same set used for its picture."""
         songs = [it for it in items if it["kind"] == "audio" and it.get("_loose")]
         if not songs:
-            return
+            return self.tidy_videos(items)
         variants = {}
         for it in items:
             if it["kind"] == "audio" and not it.get("_loose") and it.get("artist") not in (None, "Unknown Artist"):
@@ -728,6 +754,43 @@ class Library:
                 it["year"] = int(years[-1])
             it["_video"] = videos.get((str(Path(it["_path"]).parent), loose_match_key(it["file"])))
             it["art"] = "video" if it["_video"] and not it.get("_img") and not it.get("_cover") else None
+        self.tidy_videos(items)
+
+    def tidy_videos(self, items):
+        """Videos in the music folders (concerts, DJ sets) whose name starts with an artist from the music
+        library get that artist, and the title without it ("John Summit Live @ Ultra Europe 2026" ->
+        "Live @ Ultra Europe 2026" by John Summit). Copies of the same video get a quality label."""
+        artists = {}
+        for it in items:
+            if it["kind"] == "audio" and it.get("artist") not in (None, "Unknown Artist"):
+                artists.setdefault(it["artist"].lower(), it["artist"])
+        known = sorted(artists, key=len, reverse=True)
+        music_roots = getattr(self, "music_roots", set())
+        vids = [it for it in items if it["kind"] == "video" and not it.get("show")]
+        for it in vids:
+            if "_vtitle" not in it:
+                it["_vtitle"] = it["title"]
+            title = it["_vtitle"]
+            it["title"], it["artist"], it["quality"] = title, None, None
+            if it["_root"] not in music_roots:
+                continue
+            low = title.lower()
+            k = next((k for k in known if low.startswith(k) and title[len(k):len(k) + 1] in (" ", ":", "")), None)
+            if not k:
+                continue
+            it["artist"] = artists[k]
+            m = re.match(re.escape(title[:len(k)]) + r"(?:\s*[-|:@]\s*|\s+(?=(?i:live|at|set|@)\b))(.+)$", title)
+            if m and len(m.group(1).strip(" -|:")) >= 4:
+                t = m.group(1).strip(" -|:")
+                it["title"] = t[:1].upper() + t[1:]
+        copies = {}
+        for it in vids:
+            copies.setdefault((it.get("artist"), it["title"].lower(), it.get("year")), []).append(it)
+        for same in copies.values():
+            if len(same) > 1:
+                for it in same:
+                    w = it.get("width") or 0
+                    it["quality"] = "4K" if w >= 3800 else "1080p" if w >= 1900 else "720p" if w >= 1270 else "SD"
 
     def _gen_thumb(self, it, out: Path):
         pre = [NICE, "-n", "15"] if NICE else []
@@ -1963,7 +2026,8 @@ class Subsonic:
             if it["kind"] == "audio":
                 title, artist, aartist, album = it.get("title"), it.get("artist"), it.get("albumArtist"), it.get("album")
             elif it["kind"] == "video" and it["_root"] in self.music_roots and (it.get("_a") or {}).get("codec"):
-                title, artist, aartist, album = it.get("title") or Path(it["file"]).stem, "Music Videos", "Music Videos", self.VIDEO_ALBUM
+                title, artist, aartist, album = (it.get("title") or Path(it["file"]).stem, it.get("artist") or "Music Videos",
+                                                 "Music Videos", self.VIDEO_ALBUM)
             else:
                 continue
             arid = self._id("ar-", aartist or "Unknown Artist")
@@ -3430,7 +3494,8 @@ function art(id,title,sq,badge){const it=id&&S.byId[id];if(it&&it.loose)return l
 function group(){
   S.byId={};for(const it of S.items)S.byId[it.id]=it;
   const vids=S.items.filter(i=>i.kind==='video');
-  S.movies=vids.filter(v=>!v.show).sort((a,b)=>a.title.localeCompare(b.title));
+  // concert videos sort by their DJ, then the set
+  S.movies=vids.filter(v=>!v.show).sort((a,b)=>((a.artist?a.artist+' ':'')+a.title).localeCompare((b.artist?b.artist+' ':'')+b.title));
   const sh={};for(const v of vids.filter(v=>v.show)){(sh[v.show]??={key:'show:'+v.show,name:v.show,eps:[],added:0,year:null}).eps.push(v)}
   S.shows=Object.values(sh);for(const s of S.shows){s.eps.sort((a,b)=>a.season-b.season||a.episode-b.episode);s.added=Math.max(...s.eps.map(e=>e.added));s.year=s.eps.find(e=>e.year)?.year||null;s.seasons=[...new Set(s.eps.map(e=>e.season))]}
   S.shows.sort((a,b)=>a.name.localeCompare(b.name));S.showByKey={};for(const s of S.shows)S.showByKey[s.key]=s;
@@ -3460,7 +3525,7 @@ function continueList(){
   return out.slice(0,20)}
 
 /* ---------- cards & rows ---------- */
-function itemCard(it){const sub=it.show?`${it.show} · S${it.season}:E${it.episode}`:[it.year,fmtDur(it.duration)].filter(Boolean).join(' · ');
+function itemCard(it){const sub=it.show?`${it.show} · S${it.season}:E${it.episode}`:[it.artist,it.year,it.quality,fmtDur(it.duration)].filter(Boolean).join(' · ');
   const p=pct(it.id);const a=art(it.id,it.show||it.title,false,isNew(it)?'NEW':null);if(p)a.append(h('div',{class:'pbar'},h('i',{style:`width:${p}%`})));
   return h('div',{class:'card',onclick:()=>it.show?openShow(S.showByKey['show:'+it.show],it):openMovie(it)},a,h('div',{class:'lbl'},it.show?(it.epTitle||it.title):it.title),h('div',{class:'sub'},sub))}
 function showCard(s){return h('div',{class:'card',onclick:()=>openShow(s)},art(s.eps[0].id,s.name,false,isNew(s)?'NEW EPISODES':null),h('div',{class:'lbl'},s.name),h('div',{class:'sub'},`${s.seasons.length} Season${s.seasons.length>1?'s':''} · ${s.eps.length} ep`))}
@@ -3506,7 +3571,7 @@ function viewMusic(m){S.asort??='artist';const list=[...S.albums];if(S.asort==='
      h('button',{class:'btn play',onclick:()=>playQueue(all,0,true)},'⇄  Shuffle All'),h('span',{class:'small'},`${S.albums.length} albums · ${all.length} songs`)),
    list.length?h('div',{class:'grid sq'},list.map(albumCard)):h('div',{class:'empty'},'No music found.')))}
 function viewSearch(m){const q=S.q.toLowerCase().trim();const has=(...f)=>f.some(x=>x&&String(x).toLowerCase().includes(q));
-  const mv=S.movies.filter(v=>has(v.title,v.year,v.file)),sh=S.shows.filter(s=>has(s.name)),eps=S.items.filter(v=>v.show&&has(v.epTitle)&&!has(v.show)),
+  const mv=S.movies.filter(v=>has(v.title,v.year,v.file,v.artist)),sh=S.shows.filter(s=>has(s.name)),eps=S.items.filter(v=>v.show&&has(v.epTitle)&&!has(v.show)),
         al=S.albums.filter(a=>has(a.title,a.artist,a.genre)),tr=S.items.filter(t=>t.kind==='audio'&&has(t.title,t.artist));
   const w=h('div',{class:'page'},h('div',{class:'ptitle'},h('h1',{},`Results for “${S.q}”`)));
   if(!(mv.length+sh.length+eps.length+al.length+tr.length))w.append(h('div',{class:'empty'},'No matches.'));
@@ -3521,10 +3586,10 @@ function listBtn(key){const on=S.mylist.includes(key);const b=h('button',{class:
   b.onclick=async()=>{const now=!S.mylist.includes(key);await post('/api/mylist',{profile:S.profile.id,key,on:now});if(now)S.mylist.unshift(key);else S.mylist=S.mylist.filter(k=>k!==key);b.textContent=now?'✓':'+';b.title=now?'Remove from My List':'Add to My List';if(S.view==='mylist'||S.view==='home')render()};return b}
 function resumeLabel(it){const p=prog(it.id);return p&&!p.done&&p.pos>20?`▶  Resume ${fmtT(p.pos)}`:'▶  Play'}
 function openMovie(it){const p=prog(it.id);const r=res(it);
-  modal([h('div',{class:'mhead'},art(it.id,it.title),h('div',{class:'info'},h('h1',{},it.title),h('div',{class:'btns'},
+  modal([h('div',{class:'mhead'},art(it.id,it.title),h('div',{class:'info'},it.artist?h('div',{class:'small',style:'color:#ccc;font-weight:700'},it.artist):null,h('h1',{},it.title),h('div',{class:'btns'},
       h('button',{class:'btn play',onclick:()=>{closeModal();playVideo(it)}},resumeLabel(it)),
       p&&p.pos>20?h('button',{class:'btn gray',onclick:()=>{closeModal();playVideo(it,0)}},'↺  Start Over'):null,listBtn(it.id)))),
-   h('div',{class:'mbody'},meta(isNew(it)?h('span',{class:'new'},'New'):null,it.year,fmtDur(it.duration),r?h('span',{class:'hd'},r):null,it.subs?.length?h('span',{class:'hd'},'CC'):null,
+   h('div',{class:'mbody'},meta(isNew(it)?h('span',{class:'new'},'New'):null,it.year,it.quality,fmtDur(it.duration),r?h('span',{class:'hd'},r):null,it.subs?.length?h('span',{class:'hd'},'CC'):null,
        !it.direct&&S.transcode&&(APPLE_HLS||!hevcPass(it))?h('span',{class:'hd',title:'Converted on the fly for your browser'},'TRANSCODE'):null),
      p&&!p.done&&p.dur?h('div',{style:'max-width:300px;margin-bottom:14px'},h('div',{class:'pbar',style:'position:static'},h('i',{style:`width:${pct(it.id)}%`})),h('div',{class:'small',style:'margin-top:6px'},`${fmtT(p.dur-p.pos)} remaining`)):null,
      h('div',{class:'small'},it.folder+' / '+it.file),h('div',{class:'small'},(it.size/1e9).toFixed(2)+' GB'))])}
@@ -3551,7 +3616,8 @@ function openAlbum(a){const dur=a.tracks.reduce((s,t)=>s+(t.duration||0),0);
 const vid=$('#vid'),P={it:null,mode:'direct',off:0,dur:0,pending:0,sub:-1,lastSave:0,drag:false,idleT:0};
 function playVideo(it,start){stopMusic(true);closeModal();P.it=it;P.dur=it.duration||0;P.mode=(it.direct||!S.transcode)?'direct':txMode();P.hevc=P.mode==='tx'&&hevcPass(it);P.sub=-1;
   const p=prog(it.id);if(start==null)start=p&&!p.done&&p.pos>20?Math.max(0,p.pos-5):0;
-  $('#ptitle').replaceChildren(it.show?h('span',{},h('b',{},it.show),h('small',{},`S${it.season}:E${it.episode} ${it.epTitle||''}`)):h('b',{},it.title));
+  $('#ptitle').replaceChildren(it.show?h('span',{},h('b',{},it.show),h('small',{},`S${it.season}:E${it.episode} ${it.epTitle||''}`))
+    :it.artist?h('span',{},h('b',{},it.artist),h('small',{},it.title)):h('b',{},it.title));
   const subs=$('#psubs');subs.replaceChildren(h('option',{value:-1},'Subtitles: Off'),...(it.subs||[]).map((l,i)=>h('option',{value:i},l)));$('#psubw').classList.toggle('hidden',!(it.subs||[]).length);
   $('#pnext').classList.toggle('hidden',!nextEp(it));
   $('#player').classList.remove('hidden');document.body.classList.add('noscroll');
@@ -3943,6 +4009,7 @@ def main():
 
     VENC = pick_encoder()
     lib = Library(roots, make_thumbs=not a.no_thumbs)
+    lib.music_roots = {str(Path(p).expanduser().resolve()) for r in music for p in str(r).split(os.pathsep) if p}
     Handler.lib = lib
     Handler.state = State(XDG_DATA / "state.json")
     Handler.password = a.password or None
