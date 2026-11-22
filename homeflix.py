@@ -54,7 +54,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.10.0"
+VERSION = "1.11.0"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -2933,7 +2933,9 @@ body.mplay #modal{padding-bottom:110px}
 #vid{width:100%;height:100%;background:#000}
 #vid::cue{background:#000a;font-size:clamp(16px,2.6vw,34px)}
 .pov{position:absolute;left:0;right:0;transition:opacity .3s;z-index:2}
-#player.idle .pov{opacity:0}#player.idle{cursor:none}
+#player.idle .pov{opacity:0}
+/* the title and the "Transcoding" note fade 2 s after they appear, even while paused (showTitle) */
+#ptitle,#pmode{transition:opacity .6s}#player.notitle #ptitle,#player.notitle #pmode{opacity:0}#player.idle{cursor:none}
 .ptop{top:0;padding:18px 24px;display:flex;align-items:center;gap:18px;background:linear-gradient(#000b,#0000)}
 .ptop button{background:none;border:0;font-size:30px}
 #ptitle{font-size:18px}#ptitle small{color:#bbb;margin-left:8px}
@@ -2965,13 +2967,14 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
 #player.touch.idle .pov,#player.touch.idle #pcenter button{pointer-events:none}
 #player.touch .pcbtn{display:grid;place-items:center;border:0;padding:0;border-radius:50%;color:#fff;cursor:pointer;-webkit-tap-highlight-color:transparent}
 #player.touch .pcbtn svg{fill:currentColor}
-#player.touch #pplay{width:96px;height:96px;background:#ffffff38;color:#fff;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+#player.touch #pplay{width:96px;height:96px;background:#ffffff2a;color:#fff;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
 #player.touch #pplay svg{width:52px;height:52px}
-#player.touch #prew,#player.touch #pfwd{width:80px;height:80px;position:relative;background:#ffffff2e;-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
+#player.touch #prew,#player.touch #pfwd{width:80px;height:80px;position:relative;background:#ffffff22;-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
 #player.touch #prew svg,#player.touch #pfwd svg{width:52px;height:52px}
 #player.touch .pcbtn b{position:absolute;inset:0;display:grid;place-items:center;font-size:15px;font-weight:800;padding-top:6px;pointer-events:none}
 #player.touch .pcbtn:active{filter:brightness(.85)}
-#player.touch .pbot{padding:10px 20px max(18px,env(safe-area-inset-bottom));background:linear-gradient(#0000,#000d 40%)}
+#player.touch .ptop{background:linear-gradient(#0008,#0000)}
+#player.touch .pbot{padding:10px 20px max(18px,env(safe-area-inset-bottom));background:linear-gradient(#0000,#0009 40%)}
 #player.touch .seekwrap{height:48px;touch-action:none;cursor:pointer}
 #player.touch #pseek{pointer-events:none;-webkit-appearance:none;appearance:none;height:8px;border-radius:4px;background:linear-gradient(to right,var(--red) var(--pct,0%),#ffffff4d var(--pct,0%))}
 #player.touch #pseek::-webkit-slider-thumb{-webkit-appearance:none;width:26px;height:26px;border-radius:50%;background:var(--red);border:0;box-shadow:0 2px 8px #000a}
@@ -2986,11 +2989,11 @@ input[type=range]{accent-color:var(--red);cursor:pointer}
 #psubbtn{display:none}
 /* Computers: big TV-style controls. Title above a thick bar, then a row of large round buttons; the one
    under the mouse (or keyboard focus) turns white and shows its name, like the selected button on a TV */
-#player.desk .ptop{padding:36px 48px;background:linear-gradient(#000c,#0000)}
+#player.desk .ptop{padding:36px 48px;background:linear-gradient(#0008,#0000)}
 #player.desk #pback{width:64px;height:64px;border-radius:50%;display:grid;place-items:center;color:#fff;cursor:pointer}
 #player.desk #pback svg{width:40px;height:40px;fill:currentColor}
 #player.desk #pads{font-size:16px;padding:8px 14px;cursor:pointer;color:#ddd;background:none}
-#player.desk .pbot{padding:120px 72px 34px;background:linear-gradient(#0000,#000e 60%)}
+#player.desk .pbot{padding:120px 72px 34px;background:linear-gradient(#0000,#000a 60%)}
 #player.desk #ptitle{margin-bottom:22px}
 #player.desk #ptitle b{display:block;font-size:40px;font-weight:800}
 #player.desk #ptitle small{display:block;margin:4px 0 0;font-size:24px;color:#ccc}
@@ -3447,7 +3450,7 @@ function playVideo(it,start){stopMusic(true);closeModal();P.it=it;P.dur=it.durat
   $('#player').classList.remove('hidden');document.body.classList.add('noscroll');
   if(document.fullscreenEnabled&&!document.fullscreenElement&&matchMedia('(pointer:coarse)').matches)$('#player').requestFullscreen().catch(()=>{});
   P.ads=[];P.adsState=null;P.allow=new Set();P.undo=null;P.adJump=null;clearTimeout(P.adsT);adsUI();loadAds(it.id);
-  loadVid(start);poke()}
+  loadVid(start);poke();showTitle()}
 function nextEp(it){if(!it.show)return null;const s=S.showByKey['show:'+it.show];return s.eps[s.eps.indexOf(it)+1]||null}
 function loadVid(t){spin(true);[...vid.querySelectorAll('track')].forEach(x=>x.remove());
   if(P.mode==='direct'){P.off=0;P.pending=t;vid.src='/media/'+P.it.id}
@@ -3530,8 +3533,14 @@ function toggleFs(){const d=document,el=$('#player');
   if(vid.webkitEnterFullscreen){try{vid.webkitEnterFullscreen()}catch(e){msg('Full screen works once the video has started')}return}
   msg('This browser does not allow full screen')}
 $('#pfs').onclick=toggleFs;
-// hide the controls after 3 s of no mouse movement (computers: not while the mouse rests on them)
-function poke(){const p=$('#player');p.classList.remove('idle');clearTimeout(P.idleT);P.idleT=setTimeout(()=>{if(vid.paused)return;if(!TOUCH&&p.querySelector('.pov:hover'))return poke();p.classList.add('idle')},3000)}
+const HIDE_MS=2000;  // the controls and the title go away this long after you stop moving the mouse
+// show the title (and "Transcoding") for 2 s: when a video starts, when you pause, and when the controls come back
+function showTitle(){const p=$('#player');p.classList.remove('notitle');clearTimeout(P.titleT);P.titleT=setTimeout(()=>p.classList.add('notitle'),HIDE_MS)}
+vid.addEventListener('pause',()=>{if(P.it)showTitle()});
+// hide the controls 2 s after you stop moving the mouse (or tapping), even with the pointer resting on them;
+// pressing play again starts the 2 s too
+function poke(){const p=$('#player');if(p.classList.contains('idle'))showTitle();p.classList.remove('idle');clearTimeout(P.idleT);P.idleT=setTimeout(()=>{if(!vid.paused)p.classList.add('idle')},HIDE_MS)}
+vid.addEventListener('play',()=>{if(P.it&&!$('#player').classList.contains('idle'))poke()});
 $('#player').addEventListener('mousemove',poke);
 // Phones: a tap while the controls are hidden only brings them back. Without this, the controls appear
 // under the finger before the tap finishes, and the same tap would press whatever button is there
