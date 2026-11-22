@@ -83,6 +83,25 @@ It's one file and uses nothing outside the Python standard library. You can read
 
 <p align="center"><img src="docs/screenshots/music.png" alt="The Music page on a computer: a row of album covers, and the music bar at the bottom with a red progress bar, big shuffle, previous, pause, next and repeat buttons, a Big player button, volume and close" width="100%"></p>
 
+### Music apps and Apple CarPlay
+Homeflix speaks the **Subsonic** language that many music apps use, so your music library also works in apps like **[Amperfy](https://apps.apple.com/us/app/amperfy-music/id1530145038)** (free, iPhone and iPad). Amperfy shows up on **Apple CarPlay** and can **download** albums and sets to the phone, so they play in the car with no connection to home.
+
+**Setting up Amperfy** (on your home Wi-Fi):
+1. Install **Amperfy Music** from the App Store and open it.
+2. Choose **Subsonic** as the server type.
+3. Server URL: your Homeflix address, for example `http://192.168.1.27:8484`.
+4. Username: any name. Password: your Homeflix password, or anything if you haven't set one.
+5. Log in and wait for the first sync to finish.
+6. To listen in the car without internet, download what you want while you're at home: open an album and choose **Download**.
+
+**What apps see:**
+- Everything in your **music folders**.
+- Videos in your music folders (concerts, DJ sets) appear as **songs in an album called "Music Videos"**, sound only. Homeflix takes the sound out of each one the first time it's needed. If the sound is AAC this takes seconds. Any other sound is converted ahead of time in the background, at low priority, after each library scan. That takes about 2 minutes per hour of music, so a big collection takes a while the first time.
+- **Favourites** (stars) and **recently played** albums are remembered; Amperfy shows them on CarPlay.
+- Playlists and podcasts aren't supported.
+
+**Away from home:** Homeflix only works on your home network, so download music before you leave, or use a private connection back home such as a VPN.
+
 ### Skips the commercials in TV recordings (optional)
 - **Off until you turn it on**, so a library of movies never sees an ad button. Turn it on by adding this line to your settings file (see [Where things live](#-where-things-live)) and restarting Homeflix:
   ```
@@ -248,6 +267,8 @@ When Homeflix scans your library, this is everything it keeps:
 | **Profiles, watch progress, My List** | Data folder: `state.json` | Created when you add profiles and watch things |
 | **Sign-in key** | Data folder: `secret.key` | Created once on first start; keeps you signed in when a password is set |
 | **Parts marked "Not an ad"** | Data folder: `not_ads.json` | Only if you use that button |
+| **Sound for music apps** | Cache folder: `audio` | The sound of videos in your music folders (and of audio formats iPhones can't play), as `.m4a` for [music apps](#music-apps-and-apple-carplay): about 70 MB per hour of music. Made the first time an app asks for it, or ahead of time when it needs converting. |
+| **Music-app favourites and plays** | Data folder: `subsonic.json` | Only if you use a music app |
 
 **Logs:** when you start Homeflix yourself, the log is only printed in the terminal window and isn't saved. As a background service it's kept here:
 
@@ -257,7 +278,7 @@ When Homeflix scans your library, this is everything it keeps:
 
 **Nothing is saved in the folder you run Homeflix from.**
 
-**How much space:** about **1.4 MB for a library of about 150 videos and songs**, on any system. Thumbnails are most of it, so it grows a little as your library grows.
+**How much space:** about **1.4 MB for a library of about 150 videos and songs**, on any system. Thumbnails are most of it, so it grows a little as your library grows. If you keep videos in your music folders, the sound prepared for music apps adds about 70 MB per hour of them.
 
 **To store less:** run with `--no-thumbs` to skip thumbnails. The cache folder is safe to delete at any time (with Homeflix stopped is best); Homeflix rebuilds what it needs.
 
