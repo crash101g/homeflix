@@ -55,7 +55,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.13.0"
+VERSION = "1.14.0"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -3290,6 +3290,23 @@ body.mplay.deskbar #modal{padding-bottom:160px}
 /* Now Playing: big controls, made for phones (and the car) */
 #mfull{position:fixed;inset:0;z-index:70;background:linear-gradient(#2b2b2b,#090909 70%);display:flex;flex-direction:column;align-items:center;gap:12px;
   padding:max(10px,env(safe-area-inset-top)) 20px max(18px,env(safe-area-inset-bottom));touch-action:manipulation;-webkit-user-select:none;user-select:none;overflow:hidden}
+/* Computers: the Big player sits in a luxury nightclub: warm out-of-focus lights drifting through haze,
+   a few sparkles and soft colour washes, kept darker in the middle so the controls read well */
+#mfull.lights{background:#040307}
+#mfull.lights>*:not(#mflights){position:relative;z-index:1}
+#mflights{position:absolute;inset:0;z-index:0;overflow:hidden;pointer-events:none;background:radial-gradient(ellipse at 50% 110%,#1a0b2e 0,#06040a 60%)}
+#mflights>div{position:absolute;mix-blend-mode:screen}
+#mflights .haze{inset:-20%;opacity:.28;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='800' height='800'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.004' numOctaves='4' seed='7' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.8 0 0 0 0 0.75 0 0 0 0 1 0 0 0 1.2 -0.45'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E") 0 0/100% 100% no-repeat;animation:mfdrift 60s linear infinite}
+#mflights .haze.h2{opacity:.18;animation-duration:90s;animation-direction:reverse;background-position:100% 100%;background-size:130% 130%}
+@keyframes mfdrift{to{transform:translate(160px,-60px)}}
+#mflights .orb{border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--c) 85%,#fff) 0,var(--c) 35%,color-mix(in srgb,var(--c) 30%,transparent) 62%,transparent 72%);animation:mffloat 20s ease-in-out infinite alternate}
+@keyframes mffloat{from{transform:translate(-30px,20px) scale(.92)}to{transform:translate(40px,-35px) scale(1.08)}}
+#mflights .spark{width:3px;height:3px;border-radius:50%;background:#fff;box-shadow:0 0 8px 2px #fff8,0 0 18px 6px #ffd27a55;animation:mftwinkle 3s ease-in-out infinite}
+@keyframes mftwinkle{0%,100%{opacity:0;transform:scale(.4)}50%{opacity:1;transform:scale(1.4)}}
+#mflights .wash{width:70%;height:80%;border-radius:50%;filter:blur(60px);opacity:.45;animation:mffloat 24s ease-in-out infinite alternate}
+#mflights .w1{left:-20%;top:-20%;background:#a43cff}#mflights .w2{right:-20%;bottom:-25%;background:#ff7a2e;animation-delay:-12s}
+#mflights .vignette{inset:0;mix-blend-mode:normal;background:radial-gradient(ellipse 42% 60% at 50% 55%,#000b 0,#0007 45%,transparent 75%),radial-gradient(ellipse at center,transparent 55%,#000c 100%)}
+@media (prefers-reduced-motion:reduce){#mflights>div{animation:none!important}}
 #mfull button{background:none;border:0;color:#fff;display:grid;place-items:center;min-width:56px;min-height:56px;border-radius:50%;cursor:pointer;padding:0;-webkit-tap-highlight-color:transparent}
 #mfull button:active{background:#ffffff26}
 #mfull button.on{color:#46d369}
@@ -3852,7 +3869,16 @@ function mfTime(t){const d=mdur(),c=t==null?mcur():t,f=d?Math.max(0,Math.min(1,c
 async function mfWake(on){try{if(on&&!MF.lock&&'wakeLock'in navigator){MF.lock=await navigator.wakeLock.request('screen');MF.lock.addEventListener('release',()=>{MF.lock=null})}
   else if(!on&&MF.lock){const l=MF.lock;MF.lock=null;await l.release()}}catch(e){}}
 document.addEventListener('visibilitychange',()=>{if(MF.open&&document.visibilityState==='visible')mfWake(true)});
-function mfOpen(){if(!M.q[M.i])return;MF.open=true;mfInfo();$('#mfull').classList.remove('hidden');document.body.classList.add('noscroll');mfWake(true)}
+// the nightclub lights behind the Big player on computers, made the first time it opens
+function mfLights(){if(TOUCH||$('#mflights'))return;const f=$('#mfull'),L=h('div',{id:'mflights','aria-hidden':'true'}),R=(a,b)=>a+Math.random()*(b-a);
+  const add=(cls,st={})=>{const d=h('div',{class:cls});for(const[k,v]of Object.entries(st))k.startsWith('--')?d.style.setProperty(k,v):d.style[k]=v;L.append(d)};
+  add('haze');add('haze h2');
+  const cols=['#ffcf7a','#ffb347','#ff6ac1','#c38bff','#fff1c4','#ff8f5a'];
+  for(let i=0;i<40;i++){const z=R(18,140);add('orb',{left:R(-5,100)+'%',top:R(-5,100)+'%',width:z+'px',height:z+'px','--c':cols[i%cols.length],
+    filter:`blur(${z>80?R(6,14):R(1,5)}px)`,opacity:R(.25,.8),animationDuration:R(14,30)+'s',animationDelay:-R(0,30)+'s'})}
+  for(let i=0;i<28;i++)add('spark',{left:R(0,100)+'%',top:R(0,60)+'%',animationDelay:-R(0,4)+'s',animationDuration:R(2,5)+'s'});
+  add('wash w1');add('wash w2');add('vignette');f.classList.add('lights');f.prepend(L)}
+function mfOpen(){if(!M.q[M.i])return;mfLights();MF.open=true;mfInfo();$('#mfull').classList.remove('hidden');document.body.classList.add('noscroll');mfWake(true)}
 function mfClose(){if(!MF.open)return;MF.open=false;$('#mfull').classList.add('hidden');if(!P.it)document.body.classList.remove('noscroll');mfWake(false)}
 $('#mexpand').onclick=mfOpen;$('#mfclose').onclick=mfClose;
 $('#mfsub').onclick=()=>{const tr=M.q[M.i],al=tr&&mfAlbum(tr);if(al){mfClose();openAlbum(al)}};

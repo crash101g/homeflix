@@ -84,6 +84,7 @@ It's one file and uses nothing outside the Python standard library. You can read
 - **Lock-screen and media-key controls** on phones.
 - On phones the music bar has **big previous / play / next buttons**, a **Big player** button, and a slider along its top edge: **tap anywhere on it to jump** to that part of the song, or drag.
 - A **Now Playing** screen with big, easy-to-hit buttons for phones: tap **Big player** (or the song) to open it. **Previous / Next** sit up top, then a progress bar you can tap or drag anywhere, then **back 15 s · play · forward 15 s** (double-tap to skip 30 s). It keeps the screen on while it's open, and works sideways in a car mount.
+- On computers, the **Big player** sits in a **luxury nightclub**: warm out-of-focus lights drift slowly through haze behind the controls, with a few sparkles. They only move while it's open, and stay still if your computer is set to reduce motion.
 
 <p align="center"><img src="docs/screenshots/music.png" alt="The Music page on a computer: a row of album covers, and the music bar at the bottom with a red progress bar, big shuffle, previous, pause, next and repeat buttons, a Big player button, volume and close" width="100%"></p>
 
