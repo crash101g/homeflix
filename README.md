@@ -217,12 +217,33 @@ python homeflix.py --videos "D:\Movies" --music "%USERPROFILE%\Music"   # Window
 | `--rescan-minutes N` | Auto-rescan interval (default 15, `0` disables) |
 | `--no-thumbs` | Skip thumbnail generation |
 | `--ads MODE` | Commercial skipping: `off` (default), `auto` (finds ad breaks in TV recordings: `.ts`, `.m2ts`, `.mpg`) or `all` (every video). Or set `HOMEFLIX_ADS` in the settings file. |
+| `--exclude PATH` | Leave a folder, file or pattern out of Homeflix (repeatable). See [Keeping things out](#keeping-things-out-of-homeflix). |
 | `--quiet` | Don't log every HTTP request |
 | `--version` | Print the version and exit. The version is also shown at startup and next to the logo in the web app. |
 
 To make a setting stick, put it in your settings file (see below), e.g. `HOMEFLIX_QUALITY=max`. Homeflix reads that file every time it starts, however you run it. Flags on the command line win over the file. If you use the service, restart it afterwards.
 
 New files show up on their own: Homeflix rescans every 15 minutes, or right away when you press the **⟳** button.
+
+### Keeping things out of Homeflix
+
+**Hide from the app.** On a movie, show, album or song, press **Hide** (the crossed-out eye) and choose:
+- **Hide for everyone**: nobody using your Homeflix sees it.
+- **Hide just for me**: only your profile stops seeing it; other profiles still do.
+
+Hidden things disappear from every list, row and search, and from Continue Watching and My List. Things hidden for everyone also disappear from [music apps](#music-apps-and-apple-carplay). A **Hidden (n)** link on the Movies, Shows and Music pages lists them, each with an **Unhide** button. Nothing on your disk changes. Profiles have no passwords, so "just for me" is a convenience, not a lock.
+
+**Leave folders and files out completely.** For content that should never show up, list it in your settings file. Excluded files aren't scanned, listed, searchable or playable, and can't be brought back from the app:
+
+```bash
+HOMEFLIX_EXCLUDE="/home/you/Music/Interviews:/home/you/Videos/Private:*sample*"
+```
+
+- **Folders**: everything inside is left out.
+- **Files**: just that file.
+- **Patterns**: `*sample*` matches file and folder names, and patterns with a `/`, like `*/Kids/*`, match whole paths.
+
+Separate entries with `:` on Linux and macOS, or `;` on Windows, or use `--exclude` once per entry. You can also put an empty file named **`.homeflixignore`** in a folder to leave that folder out. Changes apply at the next rescan (press **⟳**).
 
 ## 🔒 Secure by design
 
