@@ -56,7 +56,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.16.2"
+VERSION = "1.16.3"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -272,6 +272,9 @@ _ARTIST_SEPS = [r"\s+-\s+", r"\s*\|\s*", r"\s+@\s*", r"\s*:\s+", r"\s+(?=(?i:liv
 
 def _loose_base(s):
     s = html.unescape(s.translate(_FULLWIDTH))
+    s = re.sub(r"(?i)^vlc-record-\d{4}-\d\d-\d\d-\d\dh\d\dm\d\ds-", "", s)  # VLC recording prefix
+    s = re.sub(r"(?i)\.(?:m4a|mp3|mp4|webm)-?$", "", s)  # "Set.m4a-.mp4": the recorded file's own name
+    s = re.sub(r"\.f\d{2,4}$", "", s)  # yt-dlp format number ("Set [id].f251")
     if "_-_" in s or (s.count("_") >= 2 and " " not in s.strip()):
         s = s.replace("_", " ")
     return _DL_ID_RE.sub("", s)
@@ -547,6 +550,17 @@ class Library:
                 raw = {}
             data = self._summarize_probe(raw)
             self.probe_cache[key] = data
+        if it["kind"] == "video" and data.get("a") and not data.get("v"):
+            # a "video" file with sound but no picture (e.g. a sound-only .webm download): it's a song
+            p = Path(it["_path"])
+            try:
+                sib = os.listdir(p.parent)
+                new = self._base_item(p, Path(it["_root"]), "audio", sib, {f.lower(): f for f in sib})
+            except OSError:
+                new = None
+            if new:
+                it.clear()
+                it.update(new)
         self._apply_probe(it, data)
         it["_probed"] = True
 
@@ -2770,7 +2784,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
             ctype = "video/mp4"
         else:
-            cmd += ["-vn", "-sn", "-c:a", "aac", "-b:a", "256k"]
+            # audio has no keyframes to cut fragments at: cut one every second, or nothing is sent
+            # until the whole file is converted (minutes for a long DJ set)
+            cmd += ["-vn", "-sn", "-dn", "-c:a", "aac", "-b:a", "256k", "-frag_duration", "1000000"]
             ctype = "audio/mp4"
         cmd += ["-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
         if self.command == "HEAD":
