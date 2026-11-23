@@ -258,11 +258,23 @@ A tool that serves files from your disk should be paranoid, so Homeflix is:
 
 ### HTTPS and using Homeflix away from home
 
-**Do I need HTTPS?** At home, usually not. Homeflix uses plain `http://` on your own network. HTTPS would hide your traffic from other devices on the same Wi-Fi (worth it if guests or untrusted gadgets share it), and iPhones allow one more feature over HTTPS: the **Big player keeping the screen on** while it's open. Over plain HTTP the screen may still dim and lock; the music keeps playing.
+**Do I need HTTPS?** At home, usually not. Homeflix uses plain `http://` on your own network. HTTPS would hide your traffic from other devices on the same Wi-Fi (worth it if guests or untrusted gadgets share it). Over plain HTTP, someone snooping on your Wi-Fi could see what you're playing and **your Homeflix password** (from the sign-in page and from music apps like Amperfy). iPhones also allow one more feature over HTTPS: the **Big player keeping the screen on** while it's open. Over plain HTTP the screen may still dim and lock; the music keeps playing.
 
-**Why Homeflix doesn't just switch on HTTPS itself:** a home server can't get a normal trusted certificate for an address like `192.168.1.27`. With a self-made certificate, every browser shows a "not private" warning, and iPhone apps such as Amperfy refuse to connect until you install that certificate on each device.
+**Why Homeflix doesn't just switch on HTTPS itself:** a home server can't get a normal trusted certificate for an address like `192.168.1.27`. Free certificates from [Let's Encrypt](https://letsencrypt.org) are only issued for a **domain name you own** (or a public internet address), because no outside service can check who owns a private home address. With a self-made certificate, every browser shows a "not private" warning, and iPhone apps such as Amperfy refuse to connect until you install that certificate on each device.
 
-**The easy way to get both HTTPS and access from anywhere: [Tailscale](https://tailscale.com)** (free for personal use). It's a private network between your own devices. Your phone can then reach Homeflix from anywhere (in the car on cellular, at work, travelling) through a real HTTPS address with a trusted certificate, so there are no warnings. Nothing is opened to the internet.
+There are two good ways to get a real, trusted certificate:
+
+| | **Tailscale** (recommended) | **Your own domain + Caddy** |
+|---|---|---|
+| Cost | Free for personal use | A domain, about $10 a year |
+| Setup | About 10 minutes | About an hour |
+| Works away from home | Yes | No, home network only (unless you add a VPN) |
+| Certificate | Let's Encrypt, handled by Tailscale | Let's Encrypt, handled by Caddy |
+| Opens anything to the internet | No | No |
+
+#### Tailscale: HTTPS and access from anywhere
+
+**The easy way to get both HTTPS and access from anywhere: [Tailscale](https://tailscale.com)** (free for personal use). Its HTTPS addresses use Let's Encrypt certificates, which Tailscale gets and renews for you. It's a private network between your own devices. Your phone can then reach Homeflix from anywhere (in the car on cellular, at work, travelling) through a real HTTPS address with a trusted certificate, so there are no warnings. Nothing is opened to the internet.
 
 1. Create a Tailscale account, then install Tailscale on the computer that runs Homeflix and on your phone, and sign in to the same account on both.
 2. In the Tailscale admin console, under **DNS**, turn on **MagicDNS** and **HTTPS Certificates**.
@@ -274,6 +286,39 @@ A tool that serves files from your disk should be paranoid, so Homeflix is:
 4. It prints an address like `https://my-pc.your-tailnet.ts.net`. Open that on your phone, in the browser, or as the server URL in [Amperfy](#music-apps-and-apple-carplay). Your usual `http://192.168.1.x:8484` address keeps working at home too.
 
 > Tailscale's `serve` shares Homeflix only with devices signed in to *your* Tailscale account. Don't use `tailscale funnel`, which would put it on the public internet. If more than you use the account, set a Homeflix password (`--password`). See Tailscale's [serve documentation](https://tailscale.com/kb/1242/tailscale-serve) for more options.
+
+#### Let's Encrypt with your own domain (Caddy)
+
+If you'd rather not use Tailscale, you can get a Let's Encrypt certificate for a name like `homeflix.example.com` with your own domain. [Caddy](https://caddyserver.com), a small free web server, sits in front of Homeflix: it handles HTTPS, gets the certificate and renews it on its own, and passes everything on to Homeflix. It uses Let's Encrypt's **DNS challenge**, which proves you own the domain through your domain provider, so **no ports are opened on your router**.
+
+1. **Get a domain** from a provider that Caddy supports for the DNS challenge, such as Cloudflare, Porkbun, Namecheap, or DigitalOcean (see the [list of Caddy DNS plugins](https://caddyserver.com/docs/modules/)). Create an API token for it that is allowed to edit DNS records.
+2. **Point a name at the Homeflix computer:** in the domain's DNS settings, add an `A` record for `homeflix` → `192.168.1.27` (your computer's home address; give it a fixed address in your router so it doesn't change).
+3. **Install Caddy with your provider's DNS plugin.** On the [Caddy download page](https://caddyserver.com/download), pick your system, add the plugin (for example `caddy-dns/cloudflare`), and download it.
+4. **Create a file named `Caddyfile`:**
+   ```
+   homeflix.example.com {
+       reverse_proxy 127.0.0.1:8484 {
+           flush_interval -1
+       }
+       tls {
+           dns cloudflare {env.CF_API_TOKEN}
+       }
+   }
+   ```
+   Replace the name with yours, and `cloudflare` with your provider's plugin name. `flush_interval -1` sends video and music to the player as soon as Homeflix converts it.
+5. **Start it** in the folder with the `Caddyfile`, with your API token:
+   ```bash
+   CF_API_TOKEN=your-token sudo -E caddy run
+   ```
+   (`sudo` lets it use the HTTPS port, 443.) The first start takes a minute while it gets the certificate.
+6. Open `https://homeflix.example.com` on your phone and in Amperfy.
+
+Good to know:
+- **Some routers refuse a public name that points to a home address** (called "DNS rebinding protection"). If the name doesn't open at home, allow your domain in the router's DNS settings, or use another DNS server on your devices.
+- **Your old `http://192.168.1.27:8484` address still works without encryption.** Once everything uses the HTTPS address, you can start Homeflix with `--host 127.0.0.1`, so only Caddy can reach it.
+- **This only works at home.** Add Tailscale or another VPN to reach it from outside.
+
+> ⚠️ Whichever way you choose, **don't port-forward Homeflix (or Caddy) on your router** to get a certificate. That would put Homeflix on the public internet.
 
 ## 📁 Where things live
 
