@@ -56,7 +56,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-VERSION = "1.16.0"
+VERSION = "1.16.2"
 
 VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".flv", ".ts",
              ".m2ts", ".mts", ".mpg", ".mpeg", ".3gp", ".ogv", ".divx", ".vob"}
@@ -2027,7 +2027,7 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 # ----------------------------------------------------------------------------
 # Subsonic API: lets music apps (Amperfy, with CarPlay and offline downloads) use the music library
 # ----------------------------------------------------------------------------
-SUBSONIC_VERSION = "1.16.1"
+SUBSONIC_VERSION = "1.16.2"
 SUBSONIC_IOS_AUDIO = {".mp3", ".m4a", ".aac", ".flac", ".wav"}  # what iPhone apps play as they are
 
 
@@ -3005,7 +3005,7 @@ def lan_ips():
 # ----------------------------------------------------------------------------
 # Front-end
 # ----------------------------------------------------------------------------
-def logo_mark(word="HOMEFLIX", curve=0.38):
+def logo_mark(word="HOMEFLIX", curve=0.19):
     """The Homeflix logo: a roof over the "HO", and letters that grow taller towards both ends so the
     bottom edge arches upward in the middle."""
     half = (len(word) - 1) / 2
@@ -3016,7 +3016,7 @@ def logo_mark(word="HOMEFLIX", curve=0.38):
     return f'<span class="mark" aria-label="Homeflix">{roof}<span class="lw" aria-hidden="true">{letters}</span></span>'
 
 
-LOGO_CSS = (".mark{position:relative;display:inline-block;padding-top:.3em;padding-bottom:.42em;line-height:1}"
+LOGO_CSS = (".mark{position:relative;display:inline-block;padding-top:.3em;padding-bottom:.24em;line-height:1}"
             ".mark .roof{position:absolute;left:-.08em;top:-.04em;width:1.55em;height:.42em}"
             ".mark .lw{display:inline-flex;align-items:flex-start}.mark i{font-style:normal;display:inline-block;transform-origin:50% 0}")
 
@@ -3411,6 +3411,8 @@ body.mplay.deskbar #modal{padding-bottom:160px}
 .mfseek.drag .knob{width:40px;height:40px;margin:-20px 0 0 -20px}
 .mftimes{grid-area:times;width:100%;max-width:640px;display:flex;justify-content:space-between;font-size:18px;color:#ddd;font-variant-numeric:tabular-nums;margin-top:-8px}
 .mfhead .r{display:flex;gap:4px}
+/* the down arrow back to the music bar: big and easy to hit */
+#mfull #mfclose{width:72px;height:72px;min-width:72px;background:#ffffff14;margin-left:-6px}#mfull #mfclose svg{width:44px;height:44px}#mfull #mfclose:hover{background:#ffffff2a}
 /* 1: previous / next song, above the slider and well away from the skip buttons */
 .mfsong{grid-area:song;width:100%;max-width:520px;display:flex;justify-content:space-between;gap:20px;margin-top:4px}
 #mfull .mfsong button{flex:1 1 0;height:64px;border-radius:32px;background:#ffffff1c;display:flex;align-items:center;justify-content:center;gap:8px;font-size:19px;font-weight:700}
@@ -3977,7 +3979,9 @@ const ICON={
   rep:'<svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z"/></svg>',
   close:'<svg viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>'};
 const MF={open:false,drag:false,lock:null};
-[['#mfclose','down'],['#mfshuf','shuf'],['#mfrep','rep']].forEach(([s,k])=>$(s).innerHTML=ICON[k]);
+[['#mfshuf','shuf'],['#mfrep','rep']].forEach(([s,k])=>$(s).innerHTML=ICON[k]);
+// back to the music bar: a bold arrow that fills its round button
+$('#mfclose').innerHTML='<svg viewBox="0 0 24 24"><path d="M4.5 8.5 12 16l7.5-7.5" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 $('#mfprev').innerHTML=ICON.prev+'Previous';$('#mfnext').innerHTML='Next'+ICON.next;
 $('#mfback').innerHTML=ICON.back+'<b>15</b>';$('#mffwd').innerHTML=ICON.fwd+'<b>15</b>';
 function mfPlayIcon(){$('#mfplay').innerHTML=aud.paused?ICON.play:ICON.pause}
